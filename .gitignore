@@ -2,3 +2,7 @@ __pycache__/
 *.py[cod]
 credentials.json
 .venv/
+.controlled_browser_profile/
+.playwright_profile/
+.webview_profile/
+worklogs.json

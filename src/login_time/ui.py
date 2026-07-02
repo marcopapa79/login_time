@@ -1,15 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime
+import re
 import tkinter as tk
 import webbrowser
 from tkinter import messagebox
 
-try:
-    from tkinterweb import HtmlFrame
-except ImportError:
-    HtmlFrame = None
-
-from .config import load_credentials, save_credentials
+from .config import load_credentials, load_work_logs, save_credentials, save_work_logs
 
 
 class LoginWindow(tk.Tk):
@@ -20,9 +17,10 @@ class LoginWindow(tk.Tk):
         self.configure(bg="#1f1f22")
         self.resizable(False, False)
 
-        self.ticket_view: HtmlFrame | None = None
-        self.ticket_hint: tk.Label | None = None
-        self.last_ticket_url: str | None = None
+        self.work_logs: list[dict[str, str]] = load_work_logs()
+        self.worklog_rows: tk.Frame | None = None
+        self.worklog_canvas: tk.Canvas | None = None
+        self.worklog_canvas_window: int | None = None
         self.credentials = load_credentials()
         self._build_login_ui()
 
@@ -134,10 +132,6 @@ class LoginWindow(tk.Tk):
     def _show_dashboard(self, username: str) -> None:
         self._clear_window()
 
-        self.ticket_view = None
-        self.ticket_hint = None
-        self.last_ticket_url = None
-
         dashboard = tk.Frame(self, bg="#1f1f22", padx=28, pady=28)
         dashboard.pack(fill="both", expand=True)
 
@@ -177,6 +171,21 @@ class LoginWindow(tk.Tk):
         )
         ticket_btn.pack(side="right", padx=(0, 12), pady=(0, 18))
 
+        monthly_report_btn = tk.Button(
+            topbar,
+            text="Monthly Report",
+            font=("Segoe UI", 10, "bold"),
+            bg="#3a3a40",
+            fg="#f4f4f6",
+            activebackground="#4a4a50",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=14,
+            pady=8,
+            command=self._open_monthly_report,
+        )
+        monthly_report_btn.pack(side="right", padx=(0, 12), pady=(0, 18))
+
         first_name = username.split("@")[0].split(".")[0].capitalize() if username else "Marco"
         welcome = tk.Label(
             dashboard,
@@ -201,7 +210,7 @@ class LoginWindow(tk.Tk):
 
         ticket_title = tk.Label(
             ticket_panel,
-            text="Ticket Window",
+            text="Log working time (local)",
             font=("Segoe UI", 12, "bold"),
             fg="#f4f4f6",
             bg="#14161b",
@@ -211,33 +220,46 @@ class LoginWindow(tk.Tk):
         ticket_actions = tk.Frame(ticket_panel, bg="#14161b")
         ticket_actions.pack(fill="x", padx=10, pady=(0, 8))
 
-        open_browser_btn = tk.Button(
+        add_worklog_btn = tk.Button(
             ticket_actions,
-            text="Open current ticket in browser",
-            font=("Segoe UI", 9, "bold"),
-            bg="#3a3a40",
+            text="+ Log new working time",
+            font=("Segoe UI", 10),
+            bg="#14161b",
             fg="#f4f4f6",
-            activebackground="#4a4a50",
+            activebackground="#1d2129",
             activeforeground="#ffffff",
             relief="flat",
-            padx=12,
-            pady=6,
-            command=self._open_last_ticket_in_browser,
+            padx=4,
+            pady=4,
+            command=self._open_worklog_window,
         )
-        open_browser_btn.pack(side="right")
+        add_worklog_btn.pack(side="left")
 
-        if HtmlFrame is None:
-            self.ticket_hint = tk.Label(
-                ticket_panel,
-                text="Viewer interno non disponibile. Installa: pip install -r requirements.txt",
-                font=("Segoe UI", 10),
-                fg="#bcbcc7",
-                bg="#14161b",
-            )
-            self.ticket_hint.pack(anchor="w", padx=12, pady=(0, 12))
-        else:
-            self.ticket_view = HtmlFrame(ticket_panel, messages_enabled=False)
-            self.ticket_view.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        line = tk.Frame(ticket_panel, bg="#ff6a00", height=1)
+        line.pack(fill="x", padx=10, pady=(6, 10))
+
+        scroll_host = tk.Frame(ticket_panel, bg="#14161b")
+        scroll_host.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        self.worklog_canvas = tk.Canvas(scroll_host, bg="#14161b", highlightthickness=0)
+        self.worklog_canvas.pack(side="left", fill="both", expand=True)
+
+        scrollbar = tk.Scrollbar(scroll_host, orient="vertical", command=self.worklog_canvas.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.worklog_canvas.configure(yscrollcommand=scrollbar.set)
+
+        self.worklog_rows = tk.Frame(self.worklog_canvas, bg="#14161b")
+        self.worklog_canvas_window = self.worklog_canvas.create_window((0, 0), window=self.worklog_rows, anchor="nw")
+
+        self.worklog_rows.bind(
+            "<Configure>",
+            lambda _event: self.worklog_canvas.configure(scrollregion=self.worklog_canvas.bbox("all")),
+        )
+        self.worklog_canvas.bind(
+            "<Configure>",
+            lambda event: self.worklog_canvas.itemconfig(self.worklog_canvas_window, width=event.width),
+        )
+        self._render_worklogs()
 
     def _show_profile_menu(self, anchor: tk.Widget) -> None:
         menu = tk.Menu(self, tearoff=0, bg="#2b2b30", fg="#f4f4f6", activebackground="#3a3a40")
@@ -259,7 +281,7 @@ class LoginWindow(tk.Tk):
     def _open_ticket_window(self) -> None:
         window = tk.Toplevel(self)
         window.title("Open Ticket")
-        window.geometry("420x220")
+        window.geometry("460x330")
         window.configure(bg="#2b2b30")
         window.resizable(False, False)
         window.transient(self)
@@ -279,21 +301,37 @@ class LoginWindow(tk.Tk):
         ticket_entry.insert(0, "QUIX-")
         ticket_entry.focus_set()
 
-        open_in_browser = tk.BooleanVar(value=True)
-        browser_check = tk.Checkbutton(
+        creds_title = tk.Label(
             window,
-            text="Open in browser (use existing logged session)",
-            variable=open_in_browser,
-            onvalue=True,
-            offvalue=False,
-            font=("Segoe UI", 10),
+            text="Default credentials",
+            font=("Segoe UI", 10, "bold"),
             fg="#f4f4f6",
             bg="#2b2b30",
-            activebackground="#2b2b30",
-            activeforeground="#f4f4f6",
-            selectcolor="#2b2b30",
         )
-        browser_check.pack(anchor="w", padx=16, pady=(14, 0))
+        creds_title.pack(anchor="w", padx=20, pady=(12, 4))
+
+        browser_user = tk.Entry(window, width=34, font=("Segoe UI", 10))
+        browser_user.pack(anchor="w", padx=20)
+        browser_user.insert(0, self.credentials["username"])
+
+        browser_pass = tk.Entry(window, width=34, font=("Segoe UI", 10), show="*")
+        browser_pass.pack(anchor="w", padx=20, pady=(6, 0))
+        browser_pass.insert(0, self.credentials["password"])
+
+        copy_btn = tk.Button(
+            window,
+            text="Copy credentials",
+            font=("Segoe UI", 9, "bold"),
+            bg="#3a3a40",
+            fg="#f4f4f6",
+            activebackground="#4a4a50",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=10,
+            pady=6,
+            command=lambda: self._copy_credentials(browser_user.get().strip(), browser_pass.get().strip()),
+        )
+        copy_btn.pack(anchor="w", padx=20, pady=(8, 0))
 
         open_btn = tk.Button(
             window,
@@ -306,11 +344,84 @@ class LoginWindow(tk.Tk):
             relief="flat",
             padx=14,
             pady=8,
-            command=lambda: self._open_ticket_link(ticket_entry.get(), window, open_in_browser.get()),
+            command=lambda: self._open_ticket_link(ticket_entry.get(), window),
         )
-        open_btn.pack(anchor="e", padx=20, pady=(16, 0))
+        open_btn.pack(anchor="e", padx=20, pady=(20, 0))
 
-    def _open_ticket_link(self, ticket_value: str, window: tk.Toplevel, open_in_browser: bool) -> None:
+    def _open_worklog_window(self) -> None:
+        window = tk.Toplevel(self)
+        window.title("Log working time")
+        window.geometry("620x470")
+        window.configure(bg="#2b2b30")
+        window.resizable(False, False)
+        window.transient(self)
+        window.grab_set()
+
+        tk.Label(window, text="Ticket", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(16, 6))
+        ticket_entry = tk.Entry(window, width=40, font=("Segoe UI", 11))
+        ticket_entry.pack(anchor="w", padx=20)
+        ticket_entry.insert(0, "QUIX-")
+
+        tk.Label(window, text="Working time", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(12, 6))
+        hours_entry = tk.Entry(window, width=14, font=("Segoe UI", 11))
+        hours_entry.pack(anchor="w", padx=20)
+        hours_entry.insert(0, "1h")
+
+        tk.Label(window, text="Description", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(12, 6))
+        description_text = tk.Text(window, width=70, height=4, font=("Segoe UI", 10), wrap="word")
+        description_text.pack(anchor="w", padx=20)
+
+        def prefill_description(*_: object) -> None:
+            ticket_code = self._normalize_ticket_code(ticket_entry.get().strip())
+            if not ticket_code:
+                return
+
+            existing_description = self._find_ticket_description(ticket_code)
+            if not existing_description:
+                return
+
+            if description_text.get("1.0", "end").strip():
+                return
+
+            description_text.insert("1.0", existing_description)
+
+        ticket_entry.bind("<FocusOut>", prefill_description)
+
+        tk.Label(window, text="Comment", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(12, 6))
+        comment_text = tk.Text(window, width=55, height=6, font=("Segoe UI", 10), wrap="word")
+        comment_text.pack(anchor="w", padx=20)
+
+        save_btn = tk.Button(
+            window,
+            text="Save log",
+            font=("Segoe UI", 10, "bold"),
+            bg="#ff6a00",
+            fg="#ffffff",
+            activebackground="#e65f00",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=14,
+            pady=8,
+            command=lambda: self._save_worklog(
+                ticket_entry.get().strip(),
+                hours_entry.get().strip(),
+                description_text.get("1.0", "end").strip(),
+                comment_text.get("1.0", "end").strip(),
+                window,
+            ),
+        )
+        save_btn.pack(anchor="e", padx=20, pady=(16, 0))
+
+    def _copy_credentials(self, username: str, password: str) -> None:
+        if not username or not password:
+            messagebox.showerror("Error", "Username and password are required.")
+            return
+
+        self.clipboard_clear()
+        self.clipboard_append(f"{username}\n{password}")
+        messagebox.showinfo("Copied", "Credentials copied to clipboard (username then password).")
+
+    def _open_ticket_link(self, ticket_value: str, window: tk.Toplevel) -> None:
         ticket = ticket_value.strip().upper()
         if not ticket:
             messagebox.showerror("Error", "Insert a ticket code.")
@@ -324,44 +435,291 @@ class LoginWindow(tk.Tk):
             return
 
         url = f"https://support.quixant.com/ticket/Edit/{ticket}"
-        if open_in_browser:
-            webbrowser.open(url)
-            window.destroy()
-            return
-
-        self._load_ticket_in_app(url)
+        webbrowser.open(url)
         window.destroy()
 
-    def _load_ticket_in_app(self, url: str) -> None:
-        self.last_ticket_url = url
-
-        if self.ticket_view is None:
-            webbrowser.open(url)
-            messagebox.showinfo(
-                "Viewer not available",
-                "Viewer interno non disponibile: il ticket e' stato aperto nel browser.",
-            )
+    def _save_worklog(self, ticket: str, hours: str, description: str, comment: str, window: tk.Toplevel) -> None:
+        ticket_code = self._normalize_ticket_code(ticket)
+        if not ticket_code:
+            messagebox.showerror("Error", "Ticket is required.")
+            return
+        if ticket_code == "QUIX-":
+            messagebox.showerror("Error", "Insert a valid ticket code.")
             return
 
-        try:
-            self.ticket_view.load_website(url)
-            messagebox.showinfo(
-                "Internal viewer",
-                "Se il login web interno mostra errori, usa 'Open current ticket in browser'.",
+        parsed = self._parse_working_time(hours)
+        if parsed is None:
+            messagebox.showerror(
+                "Error",
+                "Working time non valido. Esempi: 1h, 2.5h, 1d, 1d 4h",
             )
-        except Exception:
-            webbrowser.open(url)
-            messagebox.showinfo(
-                "Viewer fallback",
-                "La pagina non e' stata caricata nel viewer interno. Ticket aperto nel browser.",
-            )
+            return
+        working_time_label, _hours_value = parsed
 
-    def _open_last_ticket_in_browser(self) -> None:
-        if not self.last_ticket_url:
-            messagebox.showinfo("No ticket", "Apri prima un ticket, poi usa questo pulsante.")
+        if not comment:
+            messagebox.showerror("Error", "Comment is required.")
             return
 
-        webbrowser.open(self.last_ticket_url)
+        ticket_description = description.strip() or self._find_ticket_description(ticket_code)
+
+        item = {
+            "working_time": working_time_label,
+            "month": datetime.now().strftime("%B %Y"),
+            "work_log": comment,
+            "ticket": ticket_code,
+            "comment": comment,
+            "description": ticket_description,
+        }
+        self.work_logs.insert(0, item)
+        save_work_logs(self.work_logs)
+        self._render_worklogs()
+        window.destroy()
+        messagebox.showinfo("Saved", "Working time logged locally.")
+
+    def _parse_working_time(self, raw: str) -> tuple[str, float] | None:
+        value = raw.strip().lower().replace(",", ".")
+        if not value:
+            return None
+
+        # Allow simple numeric input, interpreted as hours.
+        if re.fullmatch(r"\d+(?:\.\d+)?", value):
+            hours = float(value)
+            if hours <= 0:
+                return None
+            if hours.is_integer():
+                return (f"{int(hours)}h", hours)
+            return (f"{hours:g}h", hours)
+
+        # Allow formats like: 1h, 2.5h, 1d, 1d 4h
+        match = re.fullmatch(r"(?:\s*(\d+(?:\.\d+)?)d)?\s*(?:\s*(\d+(?:\.\d+)?)h)?", value)
+        if not match:
+            return None
+
+        day_part = match.group(1)
+        hour_part = match.group(2)
+        if day_part is None and hour_part is None:
+            return None
+
+        days = float(day_part) if day_part is not None else 0.0
+        hours_only = float(hour_part) if hour_part is not None else 0.0
+
+        total_hours = (days * 8.0) + hours_only
+        if total_hours <= 0:
+            return None
+
+        pieces: list[str] = []
+        if days:
+            pieces.append(f"{days:g}d")
+        if hours_only:
+            pieces.append(f"{hours_only:g}h")
+
+        return (" ".join(pieces), total_hours)
+
+    def _render_worklogs(self) -> None:
+        if self.worklog_rows is None:
+            return
+
+        for child in self.worklog_rows.winfo_children():
+            child.destroy()
+
+        if not self.work_logs:
+            empty = tk.Label(
+                self.worklog_rows,
+                text="No working hours logged!",
+                font=("Segoe UI", 14),
+                fg="#f4f4f6",
+                bg="#14161b",
+            )
+            empty.pack(anchor="center", pady=(28, 0))
+            return
+
+        grouped_logs = self._group_worklogs_by_ticket()
+
+        for ticket, bundle in grouped_logs.items():
+            card = tk.Frame(self.worklog_rows, bg="#171a20", highlightthickness=1, highlightbackground="#2c2f36")
+            card.pack(fill="x", pady=(0, 10))
+
+            top = tk.Frame(card, bg="#171a20")
+            top.pack(fill="x", padx=10, pady=(10, 6))
+
+            title_block = tk.Frame(top, bg="#171a20")
+            title_block.pack(side="left", fill="x", expand=True)
+
+            tk.Label(title_block, text=ticket, font=("Segoe UI", 12, "bold"), fg="#f4f4f6", bg="#171a20").pack(anchor="w")
+            tk.Label(
+                title_block,
+                text=bundle["description"] or "No description",
+                font=("Segoe UI", 10),
+                fg="#bcbcc7",
+                bg="#171a20",
+                wraplength=520,
+                justify="left",
+            ).pack(anchor="w", pady=(2, 0))
+
+            ticket_actions = tk.Frame(top, bg="#171a20")
+            ticket_actions.pack(side="right")
+
+            tk.Button(
+                ticket_actions,
+                text="Open ticket",
+                font=("Segoe UI", 9),
+                bg="#3a3a40",
+                fg="#f4f4f6",
+                activebackground="#4a4a50",
+                activeforeground="#ffffff",
+                relief="flat",
+                padx=8,
+                pady=3,
+                command=lambda ticket_code=ticket: self._open_ticket_for_row(ticket_code),
+            ).pack(side="left", padx=(0, 4))
+
+            tk.Button(
+                ticket_actions,
+                text="Copy description",
+                font=("Segoe UI", 9),
+                bg="#3a3a40",
+                fg="#f4f4f6",
+                activebackground="#4a4a50",
+                activeforeground="#ffffff",
+                relief="flat",
+                padx=8,
+                pady=3,
+                command=lambda text=bundle["description"]: self._copy_text_direct(text),
+            ).pack(side="left")
+
+            header = tk.Frame(card, bg="#171a20")
+            header.pack(fill="x", padx=10, pady=(4, 0))
+            tk.Label(header, text="Working time", font=("Segoe UI", 10, "bold"), fg="#f4f4f6", bg="#171a20", width=14, anchor="w").pack(side="left")
+            tk.Label(header, text="Month", font=("Segoe UI", 10, "bold"), fg="#f4f4f6", bg="#171a20", width=14, anchor="w").pack(side="left")
+            tk.Label(header, text="Work log", font=("Segoe UI", 10, "bold"), fg="#f4f4f6", bg="#171a20", anchor="w").pack(side="left", fill="x", expand=True)
+
+            divider = tk.Frame(card, bg="#ff6a00", height=1)
+            divider.pack(fill="x", padx=10, pady=(6, 8))
+
+            for entry in bundle["entries"]:
+                row = entry["row"]
+                row_frame = tk.Frame(card, bg="#171a20")
+                row_frame.pack(fill="x", padx=10, pady=(0, 6))
+
+                row_actions = tk.Frame(row_frame, bg="#171a20")
+                row_actions.pack(side="right")
+
+                tk.Button(
+                    row_actions,
+                    text="Copy work log",
+                    font=("Segoe UI", 9),
+                    bg="#3a3a40",
+                    fg="#f4f4f6",
+                    activebackground="#4a4a50",
+                    activeforeground="#ffffff",
+                    relief="flat",
+                    padx=8,
+                    pady=3,
+                    command=lambda text=entry["work_log"]: self._copy_text_direct(text),
+                ).pack(side="left", padx=(0, 4))
+
+                tk.Button(
+                    row_actions,
+                    text="Copy working time",
+                    font=("Segoe UI", 9),
+                    bg="#3a3a40",
+                    fg="#f4f4f6",
+                    activebackground="#4a4a50",
+                    activeforeground="#ffffff",
+                    relief="flat",
+                    padx=8,
+                    pady=3,
+                    command=lambda text=row["working_time"]: self._copy_text_direct(text),
+                ).pack(side="left", padx=(0, 4))
+
+                tk.Button(
+                    row_actions,
+                    text="Remove",
+                    font=("Segoe UI", 9),
+                    bg="#3a3a40",
+                    fg="#f4f4f6",
+                    activebackground="#4a4a50",
+                    activeforeground="#ffffff",
+                    relief="flat",
+                    padx=8,
+                    pady=3,
+                    command=lambda i=entry["index"]: self._remove_worklog(i),
+                ).pack(side="left")
+
+                tk.Label(row_frame, text=row["working_time"], font=("Segoe UI", 10), fg="#e7e7ee", bg="#171a20", width=14, anchor="w").pack(side="left")
+                tk.Label(row_frame, text=row["month"], font=("Segoe UI", 10), fg="#e7e7ee", bg="#171a20", width=14, anchor="w").pack(side="left")
+                tk.Label(row_frame, text=entry["work_log"], font=("Segoe UI", 10), fg="#e7e7ee", bg="#171a20", anchor="w").pack(side="left", fill="x", expand=True)
+
+    def _open_ticket_for_row(self, ticket: str) -> None:
+        ticket_code = ticket.strip().upper()
+        if not ticket_code.startswith("QUIX-"):
+            ticket_code = f"QUIX-{ticket_code}"
+        webbrowser.open(f"https://support.quixant.com/ticket/Edit/{ticket_code}")
+
+    def _open_monthly_report(self) -> None:
+        webbrowser.open("https://support.quixant.com/admin/MonthlyReport")
+
+    def _copy_text_direct(self, value: str) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(value)
+
+    def _normalize_ticket_code(self, ticket: str) -> str:
+        ticket_code = ticket.upper().strip()
+        if not ticket_code:
+            return ""
+        if not ticket_code.startswith("QUIX-"):
+            ticket_code = f"QUIX-{ticket_code}"
+        return ticket_code
+
+    def _find_ticket_description(self, ticket: str) -> str:
+        ticket_code = self._normalize_ticket_code(ticket)
+        for row in self.work_logs:
+            if row.get("ticket", "") == ticket_code:
+                return row.get("description", "")
+        return ""
+
+    def _normalize_work_log(self, row: dict[str, str]) -> str:
+        ticket = row.get("ticket", "").strip()
+        work_log = row.get("work_log", "")
+        prefix = f"{ticket} - "
+        if ticket and work_log.startswith(prefix):
+            return work_log[len(prefix):]
+        return work_log
+
+    def _group_worklogs_by_ticket(self) -> dict[str, dict[str, object]]:
+        grouped: dict[str, dict[str, object]] = {}
+        for index, row in enumerate(self.work_logs[:12]):
+            ticket = row.get("ticket", "") or "NO-TICKET"
+            bucket = grouped.setdefault(
+                ticket,
+                {
+                    "description": row.get("description", ""),
+                    "entries": [],
+                },
+            )
+            if not bucket["description"] and row.get("description", ""):
+                bucket["description"] = row.get("description", "")
+
+            entries = bucket["entries"]
+            assert isinstance(entries, list)
+            entries.append(
+                {
+                    "index": index,
+                    "row": row,
+                    "work_log": self._normalize_work_log(row),
+                }
+            )
+        return grouped
+
+    def _remove_worklog(self, index: int) -> None:
+        if index < 0 or index >= len(self.work_logs):
+            return
+
+        self.work_logs.pop(index)
+        save_work_logs(self.work_logs)
+        self._render_worklogs()
+
+        messagebox.showinfo("Removed", "Working time log removed.")
 
 
 def run_app() -> None:
