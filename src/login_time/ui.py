@@ -587,6 +587,20 @@ class LoginWindow(tk.Tk):
                 command=lambda text=bundle["description"]: self._copy_text_direct(text),
             ).pack(side="left")
 
+            tk.Button(
+                ticket_actions,
+                text="Edit description",
+                font=("Segoe UI", 9),
+                bg="#3a3a40",
+                fg="#f4f4f6",
+                activebackground="#4a4a50",
+                activeforeground="#ffffff",
+                relief="flat",
+                padx=8,
+                pady=3,
+                command=lambda ticket_code=ticket: self._open_edit_description_window(ticket_code),
+            ).pack(side="left", padx=(4, 0))
+
             header = tk.Frame(card, bg="#171a20")
             header.pack(fill="x", padx=10, pady=(4, 0))
             tk.Label(header, text="Working time", font=("Segoe UI", 10, "bold"), fg="#f4f4f6", bg="#171a20", width=14, anchor="w").pack(side="left")
@@ -645,6 +659,20 @@ class LoginWindow(tk.Tk):
                     pady=3,
                     command=lambda i=entry["index"]: self._remove_worklog(i),
                 ).pack(side="left")
+
+                tk.Button(
+                    row_actions,
+                    text="Edit log",
+                    font=("Segoe UI", 9),
+                    bg="#3a3a40",
+                    fg="#f4f4f6",
+                    activebackground="#4a4a50",
+                    activeforeground="#ffffff",
+                    relief="flat",
+                    padx=8,
+                    pady=3,
+                    command=lambda i=entry["index"]: self._open_edit_log_window(i),
+                ).pack(side="left", padx=(4, 0))
 
                 tk.Label(row_frame, text=row["working_time"], font=("Segoe UI", 10), fg="#e7e7ee", bg="#171a20", width=14, anchor="w").pack(side="left")
                 tk.Label(row_frame, text=row["month"], font=("Segoe UI", 10), fg="#e7e7ee", bg="#171a20", width=14, anchor="w").pack(side="left")
@@ -710,6 +738,111 @@ class LoginWindow(tk.Tk):
                 }
             )
         return grouped
+
+    def _open_edit_description_window(self, ticket: str) -> None:
+        ticket_code = self._normalize_ticket_code(ticket)
+        if not ticket_code:
+            return
+
+        window = tk.Toplevel(self)
+        window.title(f"Edit Description - {ticket_code}")
+        window.geometry("680x320")
+        window.configure(bg="#2b2b30")
+        window.resizable(False, False)
+        window.transient(self)
+        window.grab_set()
+
+        tk.Label(window, text=ticket_code, font=("Segoe UI", 11, "bold"), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(16, 8))
+        text = tk.Text(window, width=78, height=10, font=("Segoe UI", 10), wrap="word")
+        text.pack(anchor="w", padx=20)
+        text.insert("1.0", self._find_ticket_description(ticket_code))
+
+        tk.Button(
+            window,
+            text="Save",
+            font=("Segoe UI", 10, "bold"),
+            bg="#ff6a00",
+            fg="#ffffff",
+            activebackground="#e65f00",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=14,
+            pady=8,
+            command=lambda: self._save_ticket_description(ticket_code, text.get("1.0", "end").strip(), window),
+        ).pack(anchor="e", padx=20, pady=(16, 0))
+
+    def _save_ticket_description(self, ticket_code: str, description: str, window: tk.Toplevel) -> None:
+        for row in self.work_logs:
+            if row.get("ticket", "") == ticket_code:
+                row["description"] = description
+
+        save_work_logs(self.work_logs)
+        self._render_worklogs()
+        window.destroy()
+        messagebox.showinfo("Saved", "Ticket description updated.")
+
+    def _open_edit_log_window(self, index: int) -> None:
+        if index < 0 or index >= len(self.work_logs):
+            return
+
+        row = self.work_logs[index]
+
+        window = tk.Toplevel(self)
+        window.title("Edit Working Log")
+        window.geometry("620x420")
+        window.configure(bg="#2b2b30")
+        window.resizable(False, False)
+        window.transient(self)
+        window.grab_set()
+
+        tk.Label(window, text=f"Ticket: {row.get('ticket', '')}", font=("Segoe UI", 11, "bold"), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(16, 6))
+
+        tk.Label(window, text="Working time", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(8, 6))
+        hours_entry = tk.Entry(window, width=14, font=("Segoe UI", 11))
+        hours_entry.pack(anchor="w", padx=20)
+        hours_entry.insert(0, row.get("working_time", ""))
+
+        tk.Label(window, text="Work log", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(12, 6))
+        worklog_text = tk.Text(window, width=70, height=8, font=("Segoe UI", 10), wrap="word")
+        worklog_text.pack(anchor="w", padx=20)
+        worklog_text.insert("1.0", self._normalize_work_log(row))
+
+        tk.Button(
+            window,
+            text="Save",
+            font=("Segoe UI", 10, "bold"),
+            bg="#ff6a00",
+            fg="#ffffff",
+            activebackground="#e65f00",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=14,
+            pady=8,
+            command=lambda: self._save_log_edit(index, hours_entry.get().strip(), worklog_text.get("1.0", "end").strip(), window),
+        ).pack(anchor="e", padx=20, pady=(16, 0))
+
+    def _save_log_edit(self, index: int, hours: str, work_log: str, window: tk.Toplevel) -> None:
+        if index < 0 or index >= len(self.work_logs):
+            return
+
+        parsed = self._parse_working_time(hours)
+        if parsed is None:
+            messagebox.showerror("Error", "Working time non valido. Esempi: 1h, 2.5h, 1d, 1d 4h")
+            return
+
+        if not work_log:
+            messagebox.showerror("Error", "Work log is required.")
+            return
+
+        working_time_label, _hours = parsed
+        self.work_logs[index]["working_time"] = working_time_label
+        self.work_logs[index]["work_log"] = work_log
+        self.work_logs[index]["comment"] = work_log
+
+        save_work_logs(self.work_logs)
+        self._render_worklogs()
+        window.destroy()
+        messagebox.showinfo("Saved", "Working log updated.")
 
     def _remove_worklog(self, index: int) -> None:
         if index < 0 or index >= len(self.work_logs):
