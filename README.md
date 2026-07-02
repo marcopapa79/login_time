@@ -1,0 +1,22 @@
+# login_time
+
+Simple Python desktop app with a login GUI.
+
+## Features
+- Default username: `marco.papa@quixant.com`
+- Default password: `Birindelli79`
+- Editable fields in the login form
+- Save button to update default credentials for next runs
+- Success message: `Login done`
+- Dashboard welcome message: `Welcome Marco`
+
+## Run
+From project root:
+
+```powershell
+python main.py
+```
+
+## Notes
+- Uses Tkinter (included in standard Python on Windows).
+- Saved defaults are stored in `credentials.json`.

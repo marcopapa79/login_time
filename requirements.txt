@@ -1,0 +1,2 @@
+# Tkinter is included with standard Python on Windows.
+tkinterweb>=4.2.2
