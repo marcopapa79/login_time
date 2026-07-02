@@ -1,0 +1,42 @@
+[
+  {
+    "working_time": "1h",
+    "month": "July 2026",
+    "work_log": "update 2",
+    "ticket": "QUIX-707",
+    "comment": "update 2",
+    "description": "Explore low cost FPGA options"
+  },
+  {
+    "working_time": "1h",
+    "month": "July 2026",
+    "work_log": "update",
+    "ticket": "QUIX-707",
+    "comment": "update",
+    "description": "Explore low cost FPGA options"
+  },
+  {
+    "working_time": "1h",
+    "month": "July 2026",
+    "work_log": "test",
+    "ticket": "QUIX-711",
+    "comment": "test",
+    "description": "Industrial FPGA: Second Source Validation"
+  },
+  {
+    "working_time": "1h",
+    "month": "July 2026",
+    "work_log": "prova schiavoncini",
+    "ticket": "QUIX-715",
+    "comment": "prova schiavoncini",
+    "description": "IQ Connect Italian Jamma"
+  },
+  {
+    "working_time": "1h",
+    "month": "July 2026",
+    "work_log": "chiappa su",
+    "ticket": "QUIX-716",
+    "comment": "chiappa su",
+    "description": "IQON3 air"
+  }
+]
