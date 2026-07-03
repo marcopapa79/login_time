@@ -1,42 +1,50 @@
 [
   {
-    "working_time": "1h",
+    "working_time": "8h",
     "month": "July 2026",
-    "work_log": "update 2",
-    "ticket": "QUIX-707",
-    "comment": "update 2",
-    "description": "Explore low cost FPGA options"
+    "work_log": "prepare fpga for debug on Qxc80",
+    "ticket": "QUIX-673",
+    "comment": "prepare fpga for debug on Qxc80",
+    "description": "SX Pro: HW based on QMAX4A for AGT"
   },
   {
     "working_time": "1h",
     "month": "July 2026",
-    "work_log": "update",
+    "work_log": "no log",
+    "ticket": "QUIX-693",
+    "comment": "no log",
+    "description": "Video Splitter"
+  },
+  {
+    "working_time": "32h",
+    "month": "July 2026",
+    "work_log": "design multi boot and verify quote for design in NXI",
     "ticket": "QUIX-707",
-    "comment": "update",
+    "comment": "design multi boot and verify quote for design in NXI",
     "description": "Explore low cost FPGA options"
   },
   {
-    "working_time": "1h",
+    "working_time": "4h",
     "month": "July 2026",
-    "work_log": "test",
+    "work_log": "Qx70 new binary check",
     "ticket": "QUIX-711",
-    "comment": "test",
+    "comment": "Qx70 new binary check",
     "description": "Industrial FPGA: Second Source Validation"
   },
   {
-    "working_time": "1h",
+    "working_time": "16h",
     "month": "July 2026",
-    "work_log": "prova schiavoncini",
+    "work_log": "check fpga design and study feasibility with jamma and current binary",
     "ticket": "QUIX-715",
-    "comment": "prova schiavoncini",
+    "comment": "check fpga design and study feasibility with jamma and current binary",
     "description": "IQ Connect Italian Jamma"
   },
   {
-    "working_time": "1h",
+    "working_time": "4h",
     "month": "July 2026",
-    "work_log": "chiappa su",
+    "work_log": "no log",
     "ticket": "QUIX-716",
-    "comment": "chiappa su",
+    "comment": "no log",
     "description": "IQON3 air"
   }
 ]
