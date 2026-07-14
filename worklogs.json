@@ -1,5 +1,13 @@
 [
   {
+    "working_time": "16h",
+    "month": "July 2026",
+    "work_log": "debug rev A received",
+    "ticket": "QUIX-673",
+    "comment": "debug rev A received",
+    "description": "SX Pro: HW based on QMAX4A for AGT"
+  },
+  {
     "working_time": "8h",
     "month": "July 2026",
     "work_log": "prepare fpga for debug on Qxc80",
