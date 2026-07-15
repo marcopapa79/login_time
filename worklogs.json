@@ -2,6 +2,14 @@
   {
     "working_time": "16h",
     "month": "July 2026",
+    "work_log": "IQ2 and IQ1 air binary check validation",
+    "ticket": "QUIX-711",
+    "comment": "IQ2 and IQ1 air binary check validation",
+    "description": "Industrial FPGA: Second Source Validation"
+  },
+  {
+    "working_time": "16h",
+    "month": "July 2026",
     "work_log": "debug rev A received",
     "ticket": "QUIX-673",
     "comment": "debug rev A received",
