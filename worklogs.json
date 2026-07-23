@@ -1,5 +1,21 @@
 [
   {
+    "working_time": "32h",
+    "month": "July 2026",
+    "work_log": "analysis and suggestion on MRAM failure",
+    "ticket": "QUIX-719",
+    "comment": "analysis and suggestion on MRAM failure",
+    "description": "QXc-71: MRAM failure analysis and RMA"
+  },
+  {
+    "working_time": "12h",
+    "month": "July 2026",
+    "work_log": "fpga and lp escrow",
+    "ticket": "QUIX-718",
+    "comment": "fpga and lp escrow",
+    "description": "ATI Escrow: Backup Vertex 6 files"
+  },
+  {
     "working_time": "16h",
     "month": "July 2026",
     "work_log": "IQ2 and IQ1 air binary check validation",
