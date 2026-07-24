@@ -13,7 +13,7 @@ class LoginWindow(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Login Time")
-        self.geometry("980x760")
+        self.geometry("1366x768")
         self.configure(bg="#1f1f22")
         self.resizable(False, False)
 
@@ -32,7 +32,7 @@ class LoginWindow(tk.Tk):
         self._clear_window()
 
         card = tk.Frame(self, bg="#2b2b30", padx=36, pady=36)
-        card.place(relx=0.5, rely=0.5, anchor="center")
+        card.place(relx=0.46, rely=0.38, anchor="center")
 
         title = tk.Label(
             card,
