@@ -18,10 +18,10 @@
     "ticket": "QUIX-719",
     "comment": "analysis and suggestion on MRAM failure",
     "description": "QXc-71: MRAM failure analysis and RMA",
-    "api_synced": "",
-    "api_synced_at": "",
-    "api_ticket_uuid": "",
-    "api_month_displacement": ""
+    "api_synced": "true",
+    "api_synced_at": "2026-07-28T15:34:06+02:00",
+    "api_ticket_uuid": "7859B41C-03E9-411E-B55B-26EEB719F791",
+    "api_month_displacement": "0"
   },
   {
     "working_time": "12h",
