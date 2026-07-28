@@ -30,10 +30,10 @@
     "ticket": "QUIX-718",
     "comment": "fpga and lp escrow",
     "description": "ATI Escrow: Backup Vertex 6 files",
-    "api_synced": "",
-    "api_synced_at": "",
-    "api_ticket_uuid": "",
-    "api_month_displacement": ""
+    "api_synced": "true",
+    "api_synced_at": "2026-07-28T17:26:34+02:00",
+    "api_ticket_uuid": "41327FCC-512A-43BC-AA7F-19641E59DD45",
+    "api_month_displacement": "0"
   },
   {
     "working_time": "16h",
@@ -72,28 +72,16 @@
     "api_month_displacement": "0"
   },
   {
-    "working_time": "1h",
-    "month": "July 2026",
-    "work_log": "no log",
-    "ticket": "QUIX-693",
-    "comment": "no log",
-    "description": "Video Splitter",
-    "api_synced": "",
-    "api_synced_at": "",
-    "api_ticket_uuid": "",
-    "api_month_displacement": ""
-  },
-  {
     "working_time": "18h",
     "month": "July 2026",
     "work_log": "design multi boot and verify quote for design in NXI",
     "ticket": "QUIX-707",
     "comment": "design multi boot and verify quote for design in NXI",
     "description": "Explore low cost FPGA options",
-    "api_synced": "",
-    "api_synced_at": "",
-    "api_ticket_uuid": "",
-    "api_month_displacement": ""
+    "api_synced": "true",
+    "api_synced_at": "2026-07-28T17:29:23+02:00",
+    "api_ticket_uuid": "79A15CA4-AEA5-48DF-854B-0E45D891BCD7",
+    "api_month_displacement": "0"
   },
   {
     "working_time": "4h",
@@ -114,10 +102,10 @@
     "ticket": "QUIX-715",
     "comment": "check fpga design and study feasibility with jamma and current binary",
     "description": "IQ Connect Italian Jamma",
-    "api_synced": "",
-    "api_synced_at": "",
-    "api_ticket_uuid": "",
-    "api_month_displacement": ""
+    "api_synced": "true",
+    "api_synced_at": "2026-07-28T17:30:20+02:00",
+    "api_ticket_uuid": "D36C9161-7150-4C2D-B82C-BE8815E59523",
+    "api_month_displacement": "0"
   },
   {
     "working_time": "4h",
@@ -126,9 +114,9 @@
     "ticket": "QUIX-716",
     "comment": "no log",
     "description": "IQON3 air",
-    "api_synced": "",
-    "api_synced_at": "",
-    "api_ticket_uuid": "",
-    "api_month_displacement": ""
+    "api_synced": "true",
+    "api_synced_at": "2026-07-28T17:31:38+02:00",
+    "api_ticket_uuid": "82CBD522-85F5-4B24-9CC7-77C032685D58",
+    "api_month_displacement": "0"
   }
 ]
