@@ -27,6 +27,7 @@ class LoginWindow(tk.Tk):
         self.api_client = QuixantHubClient()
         self.api_token = ""
         self.api_token_user = ""
+        self.summary_var = tk.StringVar(value="")
         self._build_login_ui()
 
     def _clear_window(self) -> None:
@@ -191,6 +192,21 @@ class LoginWindow(tk.Tk):
         )
         monthly_report_btn.pack(side="right", padx=(0, 12), pady=(0, 18))
 
+        sync_month_btn = tk.Button(
+            topbar,
+            text="API Sync Month",
+            font=("Segoe UI", 10, "bold"),
+            bg="#3a3a40",
+            fg="#f4f4f6",
+            activebackground="#4a4a50",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=14,
+            pady=8,
+            command=self._sync_current_month,
+        )
+        sync_month_btn.pack(side="right", padx=(0, 12), pady=(0, 18))
+
         api_test_btn = tk.Button(
             topbar,
             text="API Ticket Update",
@@ -205,6 +221,15 @@ class LoginWindow(tk.Tk):
             command=self._open_api_update_window,
         )
         api_test_btn.pack(side="right", padx=(0, 12), pady=(0, 18))
+
+        summary_label = tk.Label(
+            topbar,
+            textvariable=self.summary_var,
+            font=("Segoe UI", 10, "bold"),
+            fg="#f4f4f6",
+            bg="#1f1f22",
+        )
+        summary_label.pack(side="right", padx=(0, 18), pady=(0, 18))
 
         first_name = username.split("@")[0].split(".")[0].capitalize() if username else "Marco"
         welcome = tk.Label(
@@ -483,6 +508,20 @@ class LoginWindow(tk.Tk):
         messagebox.showinfo("Saved", "Working time logged locally.")
 
     def _append_worklog_entry(self, ticket: str, hours: str, description: str, comment: str) -> bool:
+        return self._append_worklog_entry_with_status(ticket, hours, description, comment)
+
+    def _append_worklog_entry_with_status(
+        self,
+        ticket: str,
+        hours: str,
+        description: str,
+        comment: str,
+        *,
+        api_synced: bool = False,
+        api_synced_at: str = "",
+        api_ticket_uuid: str = "",
+        api_month_displacement: str = "",
+    ) -> bool:
         ticket_code = self._normalize_ticket_code(ticket)
         if not ticket_code:
             messagebox.showerror("Error", "Ticket is required.")
@@ -513,6 +552,10 @@ class LoginWindow(tk.Tk):
             "ticket": ticket_code,
             "comment": comment,
             "description": ticket_description,
+            "api_synced": "true" if api_synced else "",
+            "api_synced_at": api_synced_at,
+            "api_ticket_uuid": api_ticket_uuid,
+            "api_month_displacement": api_month_displacement,
         }
         self.work_logs.insert(0, item)
         save_work_logs(self.work_logs)
@@ -561,6 +604,8 @@ class LoginWindow(tk.Tk):
     def _render_worklogs(self) -> None:
         if self.worklog_rows is None:
             return
+
+        self._refresh_summary()
 
         for child in self.worklog_rows.winfo_children():
             child.destroy()
@@ -646,7 +691,7 @@ class LoginWindow(tk.Tk):
 
             tk.Button(
                 ticket_actions,
-                text="API update",
+                text="API sync ticket",
                 font=("Segoe UI", 9),
                 bg="#3a3a40",
                 fg="#f4f4f6",
@@ -655,8 +700,18 @@ class LoginWindow(tk.Tk):
                 relief="flat",
                 padx=8,
                 pady=3,
-                command=lambda ticket_code=ticket: self._open_api_update_window(ticket_code),
+                command=lambda ticket_code=ticket: self._sync_ticket_worklogs(ticket_code),
             ).pack(side="left", padx=(4, 0))
+
+            pending_count = sum(1 for entry in bundle["entries"] if not self._is_worklog_synced(entry["row"]))
+            synced_count = sum(1 for entry in bundle["entries"] if self._is_worklog_synced(entry["row"]))
+            tk.Label(
+                title_block,
+                text=f"API synced: {synced_count} | Pending: {pending_count}",
+                font=("Segoe UI", 9),
+                fg="#8fd18a" if pending_count == 0 else "#d8c27a",
+                bg="#171a20",
+            ).pack(anchor="w", pady=(4, 0))
 
             header = tk.Frame(card, bg="#171a20")
             header.pack(fill="x", padx=10, pady=(4, 0))
@@ -716,6 +771,32 @@ class LoginWindow(tk.Tk):
                     pady=3,
                     command=lambda i=entry["index"]: self._remove_worklog(i),
                 ).pack(side="left")
+
+                synced = self._is_worklog_synced(row)
+                status_text = self._format_sync_status(row)
+                tk.Label(
+                    row_actions,
+                    text=status_text,
+                    font=("Segoe UI", 9, "bold"),
+                    fg="#8fd18a" if synced else "#d8c27a",
+                    bg="#171a20",
+                    padx=6,
+                ).pack(side="left", padx=(8, 4))
+
+                if not synced:
+                    tk.Button(
+                        row_actions,
+                        text="API update log",
+                        font=("Segoe UI", 9),
+                        bg="#3a3a40",
+                        fg="#f4f4f6",
+                        activebackground="#4a4a50",
+                        activeforeground="#ffffff",
+                        relief="flat",
+                        padx=8,
+                        pady=3,
+                        command=lambda i=entry["index"]: self._sync_single_worklog(i),
+                    ).pack(side="left", padx=(0, 4))
 
                 tk.Button(
                     row_actions,
@@ -963,6 +1044,8 @@ class LoginWindow(tk.Tk):
                     return
                 payload = parsed_payload
 
+            resolved_uuid = ""
+            month_displacement = ""
             if endpoint_path == "/api/working_hours/form" and payload is not None:
                 ticket_reference = str(payload.get("TicketId", "")).strip() or ticket_entry.get().strip()
                 try:
@@ -973,6 +1056,7 @@ class LoginWindow(tk.Tk):
                     return
 
                 payload["TicketId"] = resolved_uuid
+                month_displacement = str(payload.get("MonthDisplacement", month_displacement_entry.get().strip() or "0"))
                 resolved_ticket_var.set(f"Resolved Ticket UUID: {resolved_uuid}")
                 payload_text.delete("1.0", "end")
                 payload_text.insert("1.0", json.dumps(payload, indent=2, ensure_ascii=False))
@@ -987,12 +1071,24 @@ class LoginWindow(tk.Tk):
             status_var.set(f"Request sent to {endpoint_path}")
             write_response(response.payload)
             if save_local_var.get():
-                saved = self._append_worklog_entry(
-                    ticket_entry.get().strip(),
-                    working_time_entry.get().strip(),
-                    local_comment_entry.get().strip() or self._find_ticket_description(ticket_entry.get().strip()),
-                    local_comment_entry.get().strip(),
-                )
+                if endpoint_path == "/api/working_hours/form":
+                    saved = self._append_worklog_entry_with_status(
+                        ticket_entry.get().strip(),
+                        working_time_entry.get().strip(),
+                        local_comment_entry.get().strip() or self._find_ticket_description(ticket_entry.get().strip()),
+                        local_comment_entry.get().strip(),
+                        api_synced=True,
+                        api_synced_at=datetime.now().isoformat(timespec="seconds"),
+                        api_ticket_uuid=resolved_uuid,
+                        api_month_displacement=month_displacement,
+                    )
+                else:
+                    saved = self._append_worklog_entry(
+                        ticket_entry.get().strip(),
+                        working_time_entry.get().strip(),
+                        local_comment_entry.get().strip() or self._find_ticket_description(ticket_entry.get().strip()),
+                        local_comment_entry.get().strip(),
+                    )
                 if saved:
                     messagebox.showinfo("Success", "API request completed and local worklog saved.")
                 else:
@@ -1050,6 +1146,154 @@ class LoginWindow(tk.Tk):
         if not ticket_code.startswith("QUIX-"):
             ticket_code = f"QUIX-{ticket_code}"
         return ticket_code
+
+    def _get_summary_month(self) -> str:
+        current_month = datetime.now().strftime("%B %Y")
+        if any(str(row.get("month", "")) == current_month for row in self.work_logs):
+            return current_month
+        if self.work_logs:
+            return str(self.work_logs[0].get("month", current_month))
+        return current_month
+
+    def _refresh_summary(self) -> None:
+        target_month = self._get_summary_month()
+        month_rows = [row for row in self.work_logs if str(row.get("month", "")) == target_month]
+        local_total = sum(self._hours_from_worklog_row(row) for row in month_rows)
+        synced_total = sum(self._hours_from_worklog_row(row) for row in month_rows if self._is_worklog_synced(row))
+        pending_total = local_total - synced_total
+        self.summary_var.set(
+            f"{target_month}  Local: {local_total:g}h  API synced: {synced_total:g}h  Pending: {pending_total:g}h"
+        )
+
+    def _hours_from_worklog_row(self, row: dict[str, str]) -> float:
+        parsed = self._parse_working_time(str(row.get("working_time", "")))
+        return parsed[1] if parsed is not None else 0.0
+
+    def _is_worklog_synced(self, row: dict[str, str]) -> bool:
+        return str(row.get("api_synced", "")).lower() == "true"
+
+    def _format_sync_status(self, row: dict[str, str]) -> str:
+        if not self._is_worklog_synced(row):
+            return "Pending API"
+
+        synced_at = str(row.get("api_synced_at", "")).strip()
+        if not synced_at:
+            return "API synced"
+        short_stamp = synced_at.replace("T", " ")[:16]
+        return f"Synced {short_stamp}"
+
+    def _month_displacement_for_label(self, month_label: str) -> str:
+        try:
+            target = datetime.strptime(month_label, "%B %Y")
+        except ValueError:
+            return "0"
+
+        current = datetime.now()
+        displacement = (target.year - current.year) * 12 + (target.month - current.month)
+        return str(displacement)
+
+    def _ensure_api_session(self) -> str:
+        username = self.credentials["username"]
+        if self.api_token and self.api_token_user == username:
+            return self.api_token
+
+        token, _payload = self.api_client.login(username, self.credentials["password"])
+        self.api_token = token
+        self.api_token_user = username
+        return token
+
+    def _build_api_payload_for_row(self, row: dict[str, str], token: str) -> tuple[str, dict[str, str]]:
+        ticket_reference = str(row.get("api_ticket_uuid", "")).strip() or str(row.get("ticket", "")).strip()
+        resolved_uuid = self.api_client.resolve_ticket_uuid(token, ticket_reference)
+        payload = {
+            "TicketId": resolved_uuid,
+            "Username": self.credentials["username"],
+            "MonthDisplacement": self._month_displacement_for_label(str(row.get("month", ""))),
+            "Reason": str(row.get("comment", "")).strip() or self._normalize_work_log(row),
+            "WorkingTime": str(row.get("working_time", "")).strip(),
+        }
+        return resolved_uuid, payload
+
+    def _mark_row_as_synced(self, row: dict[str, str], resolved_uuid: str, month_displacement: str) -> None:
+        row["api_synced"] = "true"
+        row["api_synced_at"] = datetime.now().isoformat(timespec="seconds")
+        row["api_ticket_uuid"] = resolved_uuid
+        row["api_month_displacement"] = month_displacement
+
+    def _sync_single_worklog(self, index: int) -> None:
+        if index < 0 or index >= len(self.work_logs):
+            return
+
+        if self._is_worklog_synced(self.work_logs[index]):
+            messagebox.showinfo("API sync", "This log was already synced.")
+            return
+
+        try:
+            token = self._ensure_api_session()
+            row = self.work_logs[index]
+            resolved_uuid, payload = self._build_api_payload_for_row(row, token)
+            self.api_client.request_json("POST", "/api/working_hours/form", token, payload)
+            self._mark_row_as_synced(row, resolved_uuid, payload["MonthDisplacement"])
+        except Exception as exc:  # noqa: BLE001 - surface remote API failure
+            messagebox.showerror("API sync failed", str(exc))
+            return
+
+        save_work_logs(self.work_logs)
+        self._render_worklogs()
+        messagebox.showinfo("API sync", "Work log synced successfully.")
+
+    def _sync_ticket_worklogs(self, ticket_code: str) -> None:
+        normalized_ticket = self._normalize_ticket_code(ticket_code)
+        indexes = [
+            index
+            for index, row in enumerate(self.work_logs)
+            if str(row.get("ticket", "")) == normalized_ticket and not self._is_worklog_synced(row)
+        ]
+        self._sync_multiple_worklogs(indexes, f"ticket {normalized_ticket}")
+
+    def _sync_current_month(self) -> None:
+        target_month = self._get_summary_month()
+        indexes = [
+            index
+            for index, row in enumerate(self.work_logs)
+            if str(row.get("month", "")) == target_month and not self._is_worklog_synced(row)
+        ]
+        self._sync_multiple_worklogs(indexes, f"month {target_month}")
+
+    def _sync_multiple_worklogs(self, indexes: list[int], scope_label: str) -> None:
+        if not indexes:
+            messagebox.showinfo("API sync", f"No pending logs for {scope_label}.")
+            return
+
+        try:
+            token = self._ensure_api_session()
+        except Exception as exc:  # noqa: BLE001 - surface login failure
+            messagebox.showerror("API sync failed", str(exc))
+            return
+
+        synced_count = 0
+        failures: list[str] = []
+        for index in indexes:
+            row = self.work_logs[index]
+            try:
+                resolved_uuid, payload = self._build_api_payload_for_row(row, token)
+                self.api_client.request_json("POST", "/api/working_hours/form", token, payload)
+                self._mark_row_as_synced(row, resolved_uuid, payload["MonthDisplacement"])
+                synced_count += 1
+            except Exception as exc:  # noqa: BLE001 - continue remaining rows and summarize errors
+                failures.append(f"{row.get('ticket', '')}: {exc}")
+
+        save_work_logs(self.work_logs)
+        self._render_worklogs()
+
+        if failures:
+            messagebox.showwarning(
+                "API sync completed with errors",
+                f"Synced {synced_count} logs for {scope_label}. Failed: {len(failures)}\n\n" + "\n".join(failures[:5]),
+            )
+            return
+
+        messagebox.showinfo("API sync", f"Synced {synced_count} logs for {scope_label}.")
 
     def _find_ticket_description(self, ticket: str) -> str:
         ticket_code = self._normalize_ticket_code(ticket)
@@ -1190,6 +1434,10 @@ class LoginWindow(tk.Tk):
         self.work_logs[index]["working_time"] = working_time_label
         self.work_logs[index]["work_log"] = work_log
         self.work_logs[index]["comment"] = work_log
+        self.work_logs[index]["api_synced"] = ""
+        self.work_logs[index]["api_synced_at"] = ""
+        self.work_logs[index]["api_ticket_uuid"] = ""
+        self.work_logs[index]["api_month_displacement"] = ""
 
         save_work_logs(self.work_logs)
         self._render_worklogs()
