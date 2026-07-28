@@ -57,6 +57,10 @@ def load_work_logs() -> list[dict[str, str]]:
                 "ticket": str(item.get("ticket", "")),
                 "comment": str(item.get("comment", "")),
                 "description": str(item.get("description", "")),
+                "api_synced": str(item.get("api_synced", "")),
+                "api_synced_at": str(item.get("api_synced_at", "")),
+                "api_ticket_uuid": str(item.get("api_ticket_uuid", "")),
+                "api_month_displacement": str(item.get("api_month_displacement", "")),
             }
         )
     return entries
