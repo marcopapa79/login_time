@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+import re
 from typing import Any
 from urllib import error, parse, request
 
@@ -54,6 +55,37 @@ class QuixantHubClient:
             body = json.dumps(payload).encode("utf-8")
             content_type = "application/json"
         return self._send(method, path, token=token, body=body, content_type=content_type)
+
+    def request_query(
+        self,
+        path: str,
+        token: str,
+        query: dict[str, Any] | None = None,
+    ) -> ApiResponse:
+        if query:
+            encoded = parse.urlencode({key: str(value).lower() if isinstance(value, bool) else str(value) for key, value in query.items()})
+            path = f"{path}?{encoded}"
+        return self._send("GET", path, token=token)
+
+    def resolve_ticket_uuid(self, token: str, ticket_reference: str) -> str:
+        normalized_reference = ticket_reference.strip().upper()
+        if self._looks_like_uuid(normalized_reference):
+            return normalized_reference
+
+        candidates = [
+            ("/api/tickets/list2", {"closed": False, "archived": False}),
+            ("/api/tickets/list2", {"closed": True, "archived": False}),
+            ("/api/tickets/list", {"closed": False, "archived": False}),
+            ("/api/tickets/list", {"closed": True, "archived": False}),
+        ]
+
+        for path, query in candidates:
+            response = self.request_query(path, token, query)
+            resolved = self._find_ticket_uuid(response.payload, normalized_reference)
+            if resolved:
+                return resolved
+
+        raise RuntimeError(f"Unable to resolve ticket '{ticket_reference}' to a UUID via /api/tickets/list.")
 
     def request_raw(self, method: str, path: str, token: str, body_text: str) -> ApiResponse:
         body = body_text.encode("utf-8") if body_text.strip() else None
@@ -125,3 +157,36 @@ class QuixantHubClient:
             return payload.strip()
 
         return ""
+
+    def _find_ticket_uuid(self, payload: Any, ticket_reference: str) -> str:
+        if isinstance(payload, dict):
+            internal_id = payload.get("internal_id") or payload.get("InternalId") or payload.get("ticket") or payload.get("TicketId")
+            uuid = payload.get("uuid") or payload.get("UUID")
+            if uuid and internal_id and self._ticket_matches(str(internal_id), ticket_reference):
+                return str(uuid).upper()
+
+            for value in payload.values():
+                resolved = self._find_ticket_uuid(value, ticket_reference)
+                if resolved:
+                    return resolved
+
+        if isinstance(payload, list):
+            for item in payload:
+                resolved = self._find_ticket_uuid(item, ticket_reference)
+                if resolved:
+                    return resolved
+
+        return ""
+
+    def _ticket_matches(self, candidate: str, ticket_reference: str) -> bool:
+        normalized_candidate = candidate.strip().upper()
+        normalized_reference = ticket_reference.strip().upper()
+        if normalized_candidate == normalized_reference:
+            return True
+
+        candidate_digits = re.sub(r"\D", "", normalized_candidate)
+        reference_digits = re.sub(r"\D", "", normalized_reference)
+        return bool(candidate_digits and reference_digits and candidate_digits == reference_digits)
+
+    def _looks_like_uuid(self, value: str) -> bool:
+        return bool(re.fullmatch(r"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}", value.strip().upper()))
