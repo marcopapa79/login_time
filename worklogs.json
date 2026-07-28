@@ -1,13 +1,5 @@
 [
   {
-    "working_time": "1h",
-    "month": "July 2026",
-    "work_log": "API test comment",
-    "ticket": "QUIX-707",
-    "comment": "API test comment",
-    "description": "API test comment"
-  },
-  {
     "working_time": "16h",
     "month": "July 2026",
     "work_log": "fixed issue on COM port and MRAM",

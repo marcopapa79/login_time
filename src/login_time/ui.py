@@ -789,6 +789,15 @@ class LoginWindow(tk.Tk):
             bg="#2b2b30",
         ).pack(anchor="w", padx=20)
 
+        resolved_ticket_var = tk.StringVar(value="Resolved Ticket UUID: not resolved yet")
+        tk.Label(
+            window,
+            textvariable=resolved_ticket_var,
+            font=("Segoe UI", 9),
+            fg="#bcbcc7",
+            bg="#2b2b30",
+        ).pack(anchor="w", padx=20, pady=(4, 0))
+
         form = tk.Frame(window, bg="#2b2b30")
         form.pack(fill="x", padx=20, pady=(16, 0))
 
@@ -953,6 +962,20 @@ class LoginWindow(tk.Tk):
                     messagebox.showerror("Error", "Payload JSON must be an object.")
                     return
                 payload = parsed_payload
+
+            if endpoint_path == "/api/working_hours/form" and payload is not None:
+                ticket_reference = str(payload.get("TicketId", "")).strip() or ticket_entry.get().strip()
+                try:
+                    resolved_uuid = self.api_client.resolve_ticket_uuid(self.api_token, ticket_reference)
+                except Exception as exc:  # noqa: BLE001 - expose ticket resolution issues directly
+                    status_var.set("Ticket UUID resolution failed")
+                    messagebox.showerror("Ticket resolution failed", str(exc))
+                    return
+
+                payload["TicketId"] = resolved_uuid
+                resolved_ticket_var.set(f"Resolved Ticket UUID: {resolved_uuid}")
+                payload_text.delete("1.0", "end")
+                payload_text.insert("1.0", json.dumps(payload, indent=2, ensure_ascii=False))
 
             try:
                 response = self.api_client.request_json("POST", endpoint_path, self.api_token, payload)
