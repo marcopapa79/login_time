@@ -28,6 +28,8 @@ class LoginWindow(tk.Tk):
         self.api_token = ""
         self.api_token_user = ""
         self.summary_var = tk.StringVar(value="")
+        self.month_view_var = tk.StringVar(value="")
+        self.selected_month_offset = 0
         self._build_login_ui()
 
     def _clear_window(self) -> None:
@@ -279,6 +281,45 @@ class LoginWindow(tk.Tk):
             command=self._open_worklog_window,
         )
         add_worklog_btn.pack(side="left")
+
+        month_switcher = tk.Frame(ticket_actions, bg="#14161b")
+        month_switcher.pack(side="left", padx=(18, 0))
+
+        tk.Button(
+            month_switcher,
+            text="Current Month",
+            font=("Segoe UI", 10, "bold"),
+            bg="#3a3a40",
+            fg="#f4f4f6",
+            activebackground="#4a4a50",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=12,
+            pady=6,
+            command=lambda: self._set_dashboard_month(0),
+        ).pack(side="left")
+
+        tk.Button(
+            month_switcher,
+            text="Previous Month",
+            font=("Segoe UI", 10, "bold"),
+            bg="#3a3a40",
+            fg="#f4f4f6",
+            activebackground="#4a4a50",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=12,
+            pady=6,
+            command=lambda: self._set_dashboard_month(-1),
+        ).pack(side="left", padx=(8, 0))
+
+        tk.Label(
+            ticket_actions,
+            textvariable=self.month_view_var,
+            font=("Segoe UI", 10, "bold"),
+            fg="#bcbcc7",
+            bg="#14161b",
+        ).pack(side="right")
 
         line = tk.Frame(ticket_panel, bg="#ff6a00", height=1)
         line.pack(fill="x", padx=10, pady=(6, 10))
@@ -606,14 +647,17 @@ class LoginWindow(tk.Tk):
             return
 
         self._refresh_summary()
+        target_month = self._get_summary_month()
 
         for child in self.worklog_rows.winfo_children():
             child.destroy()
 
-        if not self.work_logs:
+        visible_rows = [row for row in self.work_logs if str(row.get("month", "")) == target_month]
+
+        if not visible_rows:
             empty = tk.Label(
                 self.worklog_rows,
-                text="No working hours logged!",
+                text=f"No working hours logged for {target_month}.",
                 font=("Segoe UI", 14),
                 fg="#f4f4f6",
                 bg="#14161b",
@@ -621,7 +665,7 @@ class LoginWindow(tk.Tk):
             empty.pack(anchor="center", pady=(28, 0))
             return
 
-        grouped_logs = self._group_worklogs_by_ticket()
+        grouped_logs = self._group_worklogs_by_ticket(visible_rows)
 
         for ticket, bundle in grouped_logs.items():
             card = tk.Frame(self.worklog_rows, bg="#171a20", highlightthickness=1, highlightbackground="#2c2f36")
@@ -1147,13 +1191,27 @@ class LoginWindow(tk.Tk):
             ticket_code = f"QUIX-{ticket_code}"
         return ticket_code
 
+    def _set_dashboard_month(self, offset: int) -> None:
+        self.selected_month_offset = offset
+        self._render_worklogs()
+
+    def _month_label_from_offset(self, offset: int) -> str:
+        current = datetime.now()
+        month_index = current.month + offset
+        year = current.year
+        while month_index <= 0:
+            month_index += 12
+            year -= 1
+        while month_index > 12:
+            month_index -= 12
+            year += 1
+        return datetime(year, month_index, 1).strftime("%B %Y")
+
+    def _get_dashboard_month(self) -> str:
+        return self._month_label_from_offset(self.selected_month_offset)
+
     def _get_summary_month(self) -> str:
-        current_month = datetime.now().strftime("%B %Y")
-        if any(str(row.get("month", "")) == current_month for row in self.work_logs):
-            return current_month
-        if self.work_logs:
-            return str(self.work_logs[0].get("month", current_month))
-        return current_month
+        return self._get_dashboard_month()
 
     def _refresh_summary(self) -> None:
         target_month = self._get_summary_month()
@@ -1161,6 +1219,8 @@ class LoginWindow(tk.Tk):
         local_total = sum(self._hours_from_worklog_row(row) for row in month_rows)
         synced_total = sum(self._hours_from_worklog_row(row) for row in month_rows if self._is_worklog_synced(row))
         pending_total = local_total - synced_total
+        view_name = "Current Month" if self.selected_month_offset == 0 else "Previous Month"
+        self.month_view_var.set(f"View: {view_name} ({target_month})")
         self.summary_var.set(
             f"{target_month}  Local: {local_total:g}h  API synced: {synced_total:g}h  Pending: {pending_total:g}h"
         )
@@ -1323,9 +1383,13 @@ class LoginWindow(tk.Tk):
             return work_log[len(prefix):]
         return work_log
 
-    def _group_worklogs_by_ticket(self) -> dict[str, dict[str, object]]:
+    def _group_worklogs_by_ticket(self, rows: list[dict[str, str]]) -> dict[str, dict[str, object]]:
         grouped: dict[str, dict[str, object]] = {}
-        for index, row in enumerate(self.work_logs[:12]):
+        for row in rows[:20]:
+            try:
+                index = self.work_logs.index(row)
+            except ValueError:
+                continue
             ticket = row.get("ticket", "") or "NO-TICKET"
             bucket = grouped.setdefault(
                 ticket,
