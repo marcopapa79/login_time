@@ -1179,7 +1179,13 @@ class LoginWindow(tk.Tk):
         synced_at = str(row.get("api_synced_at", "")).strip()
         if not synced_at:
             return "API synced"
-        short_stamp = synced_at.replace("T", " ")[:16]
+        try:
+            parsed = datetime.fromisoformat(synced_at)
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone()
+            short_stamp = parsed.strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            short_stamp = synced_at.replace("T", " ")[:16]
         return f"Synced {short_stamp}"
 
     def _month_displacement_for_label(self, month_label: str) -> str:
@@ -1216,7 +1222,7 @@ class LoginWindow(tk.Tk):
 
     def _mark_row_as_synced(self, row: dict[str, str], resolved_uuid: str, month_displacement: str) -> None:
         row["api_synced"] = "true"
-        row["api_synced_at"] = datetime.now().isoformat(timespec="seconds")
+        row["api_synced_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
         row["api_ticket_uuid"] = resolved_uuid
         row["api_month_displacement"] = month_displacement
 
@@ -1272,9 +1278,13 @@ class LoginWindow(tk.Tk):
             return
 
         synced_count = 0
+        skipped_count = 0
         failures: list[str] = []
         for index in indexes:
             row = self.work_logs[index]
+            if self._is_worklog_synced(row):
+                skipped_count += 1
+                continue
             try:
                 resolved_uuid, payload = self._build_api_payload_for_row(row, token)
                 self.api_client.request_json("POST", "/api/working_hours/form", token, payload)
@@ -1289,11 +1299,14 @@ class LoginWindow(tk.Tk):
         if failures:
             messagebox.showwarning(
                 "API sync completed with errors",
-                f"Synced {synced_count} logs for {scope_label}. Failed: {len(failures)}\n\n" + "\n".join(failures[:5]),
+                f"Synced {synced_count} logs for {scope_label}. Skipped already synced: {skipped_count}. Failed: {len(failures)}\n\n" + "\n".join(failures[:5]),
             )
             return
 
-        messagebox.showinfo("API sync", f"Synced {synced_count} logs for {scope_label}.")
+        messagebox.showinfo(
+            "API sync",
+            f"Synced {synced_count} logs for {scope_label}. Skipped already synced: {skipped_count}.",
+        )
 
     def _find_ticket_description(self, ticket: str) -> str:
         ticket_code = self._normalize_ticket_code(ticket)
