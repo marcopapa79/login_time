@@ -8,7 +8,14 @@ import webbrowser
 from tkinter import messagebox, ttk
 
 from .api_client import QuixantHubClient
-from .config import load_credentials, load_work_logs, save_credentials, save_work_logs
+from .config import (
+    load_credentials,
+    load_ticket_uuid_cache,
+    load_work_logs,
+    save_credentials,
+    save_ticket_uuid_cache,
+    save_work_logs,
+)
 
 
 class LoginWindow(tk.Tk):
@@ -27,9 +34,11 @@ class LoginWindow(tk.Tk):
         self.api_client = QuixantHubClient()
         self.api_token = ""
         self.api_token_user = ""
+        self.ticket_uuid_cache: dict[str, str] = load_ticket_uuid_cache()
         self.summary_var = tk.StringVar(value="")
         self.month_view_var = tk.StringVar(value="")
         self.selected_month_offset = 0
+        self._bootstrap_ticket_uuid_cache()
         self._build_login_ui()
 
     def _clear_window(self) -> None:
@@ -1093,7 +1102,7 @@ class LoginWindow(tk.Tk):
             if endpoint_path == "/api/working_hours/form" and payload is not None:
                 ticket_reference = str(payload.get("TicketId", "")).strip() or ticket_entry.get().strip()
                 try:
-                    resolved_uuid = self.api_client.resolve_ticket_uuid(self.api_token, ticket_reference)
+                    resolved_uuid = self._resolve_ticket_uuid_cached(self.api_token, ticket_reference)
                 except Exception as exc:  # noqa: BLE001 - expose ticket resolution issues directly
                     status_var.set("Ticket UUID resolution failed")
                     messagebox.showerror("Ticket resolution failed", str(exc))
@@ -1191,6 +1200,50 @@ class LoginWindow(tk.Tk):
             ticket_code = f"QUIX-{ticket_code}"
         return ticket_code
 
+    def _is_uuid(self, value: str) -> bool:
+        return bool(re.fullmatch(r"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}", value.strip().upper()))
+
+    def _bootstrap_ticket_uuid_cache(self) -> None:
+        changed = False
+        for row in self.work_logs:
+            ticket_code = self._normalize_ticket_code(str(row.get("ticket", "")))
+            ticket_uuid = str(row.get("api_ticket_uuid", "")).strip().upper()
+            if not ticket_code or not ticket_uuid:
+                continue
+            if ticket_code not in self.ticket_uuid_cache:
+                self.ticket_uuid_cache[ticket_code] = ticket_uuid
+                changed = True
+
+        if changed:
+            save_ticket_uuid_cache(self.ticket_uuid_cache)
+
+    def _cache_ticket_uuid(self, ticket_reference: str, resolved_uuid: str) -> None:
+        ticket_code = self._normalize_ticket_code(ticket_reference)
+        uuid_value = resolved_uuid.strip().upper()
+        if not ticket_code or not uuid_value:
+            return
+
+        previous = self.ticket_uuid_cache.get(ticket_code)
+        if previous == uuid_value:
+            return
+
+        self.ticket_uuid_cache[ticket_code] = uuid_value
+        save_ticket_uuid_cache(self.ticket_uuid_cache)
+
+    def _resolve_ticket_uuid_cached(self, token: str, ticket_reference: str) -> str:
+        normalized_ref = ticket_reference.strip().upper()
+        if self._is_uuid(normalized_ref):
+            return normalized_ref
+
+        ticket_code = self._normalize_ticket_code(normalized_ref)
+        cached = self.ticket_uuid_cache.get(ticket_code)
+        if cached:
+            return cached
+
+        resolved_uuid = self.api_client.resolve_ticket_uuid(token, ticket_code)
+        self._cache_ticket_uuid(ticket_code, resolved_uuid)
+        return resolved_uuid
+
     def _set_dashboard_month(self, offset: int) -> None:
         self.selected_month_offset = offset
         self._render_worklogs()
@@ -1270,7 +1323,7 @@ class LoginWindow(tk.Tk):
 
     def _build_api_payload_for_row(self, row: dict[str, str], token: str) -> tuple[str, dict[str, str]]:
         ticket_reference = str(row.get("api_ticket_uuid", "")).strip() or str(row.get("ticket", "")).strip()
-        resolved_uuid = self.api_client.resolve_ticket_uuid(token, ticket_reference)
+        resolved_uuid = self._resolve_ticket_uuid_cached(token, ticket_reference)
         payload = {
             "TicketId": resolved_uuid,
             "Username": self.credentials["username"],
@@ -1281,6 +1334,7 @@ class LoginWindow(tk.Tk):
         return resolved_uuid, payload
 
     def _mark_row_as_synced(self, row: dict[str, str], resolved_uuid: str, month_displacement: str) -> None:
+        self._cache_ticket_uuid(str(row.get("ticket", "")), resolved_uuid)
         row["api_synced"] = "true"
         row["api_synced_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
         row["api_ticket_uuid"] = resolved_uuid
