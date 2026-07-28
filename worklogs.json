@@ -1,5 +1,13 @@
 [
   {
+    "working_time": "1h",
+    "month": "July 2026",
+    "work_log": "API test comment",
+    "ticket": "QUIX-707",
+    "comment": "API test comment",
+    "description": "API test comment"
+  },
+  {
     "working_time": "16h",
     "month": "July 2026",
     "work_log": "fixed issue on COM port and MRAM",
@@ -56,7 +64,7 @@
     "description": "Video Splitter"
   },
   {
-    "working_time": "32h",
+    "working_time": "18h",
     "month": "July 2026",
     "work_log": "design multi boot and verify quote for design in NXI",
     "ticket": "QUIX-707",

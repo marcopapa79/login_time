@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict
 
 DEFAULT_USERNAME = "marco.papa@quixant.com"
-DEFAULT_PASSWORD = "Birindelli79"
+DEFAULT_PASSWORD = "birindelli79"
 
 _CREDENTIALS_FILE = Path(__file__).resolve().parents[2] / "credentials.json"
 _WORKLOG_FILE = Path(__file__).resolve().parents[2] / "worklogs.json"
