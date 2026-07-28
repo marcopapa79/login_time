@@ -287,6 +287,21 @@ class LoginWindow(tk.Tk):
         )
         add_worklog_btn.pack(side="left")
 
+        add_off_btn = tk.Button(
+            ticket_actions,
+            text="+ Add Extra Off (Ferie)",
+            font=("Segoe UI", 10),
+            bg="#14161b",
+            fg="#f4f4f6",
+            activebackground="#1d2129",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=4,
+            pady=4,
+            command=lambda: self._open_worklog_window("off"),
+        )
+        add_off_btn.pack(side="left", padx=(10, 0))
+
         month_switcher = tk.Frame(ticket_actions, bg="#14161b")
         month_switcher.pack(side="left", padx=(18, 0))
 
@@ -454,19 +469,64 @@ class LoginWindow(tk.Tk):
         )
         api_btn.pack(anchor="e", padx=20, pady=(10, 0))
 
-    def _open_worklog_window(self) -> None:
+    def _open_worklog_window(self, default_entry_type: str = "work") -> None:
         window = tk.Toplevel(self)
         window.title("Log working time")
-        window.geometry("620x470")
+        window.geometry("620x630")
         window.configure(bg="#2b2b30")
         window.resizable(False, False)
         window.transient(self)
         window.grab_set()
 
+        entry_type_var = tk.StringVar(value="off" if default_entry_type == "off" else "work")
+        off_type_var = tk.StringVar(value="Annual Leave")
+
         tk.Label(window, text="Ticket", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(16, 6))
         ticket_entry = tk.Entry(window, width=40, font=("Segoe UI", 11))
         ticket_entry.pack(anchor="w", padx=20)
         ticket_entry.insert(0, "QUIX-")
+
+        type_row = tk.Frame(window, bg="#2b2b30")
+        type_row.pack(anchor="w", padx=20, pady=(10, 0))
+
+        tk.Label(type_row, text="Type", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(side="left", padx=(0, 10))
+        tk.Radiobutton(
+            type_row,
+            text="Work",
+            value="work",
+            variable=entry_type_var,
+            font=("Segoe UI", 10),
+            fg="#f4f4f6",
+            bg="#2b2b30",
+            selectcolor="#2b2b30",
+            activebackground="#2b2b30",
+            activeforeground="#f4f4f6",
+        ).pack(side="left", padx=(0, 10))
+        tk.Radiobutton(
+            type_row,
+            text="Extra Off / Ferie",
+            value="off",
+            variable=entry_type_var,
+            font=("Segoe UI", 10),
+            fg="#f4f4f6",
+            bg="#2b2b30",
+            selectcolor="#2b2b30",
+            activebackground="#2b2b30",
+            activeforeground="#f4f4f6",
+        ).pack(side="left")
+
+        off_type_row = tk.Frame(window, bg="#2b2b30")
+        off_type_row.pack(anchor="w", padx=20, pady=(8, 0))
+        tk.Label(off_type_row, text="Off type", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(side="left", padx=(0, 10))
+        off_type_combo = ttk.Combobox(
+            off_type_row,
+            state="readonly",
+            values=["Annual Leave", "Sick Leave", "Permit", "Other"],
+            textvariable=off_type_var,
+            font=("Segoe UI", 10),
+            width=18,
+        )
+        off_type_combo.pack(side="left")
 
         tk.Label(window, text="Working time", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(12, 6))
         hours_entry = tk.Entry(window, width=14, font=("Segoe UI", 11))
@@ -497,6 +557,26 @@ class LoginWindow(tk.Tk):
         comment_text = tk.Text(window, width=55, height=6, font=("Segoe UI", 10), wrap="word")
         comment_text.pack(anchor="w", padx=20)
 
+        def refresh_form_for_type(*_: object) -> None:
+            is_off = entry_type_var.get() == "off"
+            if is_off:
+                off_type_row.pack(anchor="w", padx=20, pady=(8, 0))
+                ticket_entry.delete(0, "end")
+                ticket_entry.insert(0, "OFF")
+                ticket_entry.configure(state="disabled")
+                if not description_text.get("1.0", "end").strip():
+                    description_text.insert("1.0", "annual leave")
+            else:
+                off_type_row.pack_forget()
+                ticket_entry.configure(state="normal")
+                current_ticket = ticket_entry.get().strip().upper()
+                if current_ticket in {"", "OFF", "QUIX-"}:
+                    ticket_entry.delete(0, "end")
+                    ticket_entry.insert(0, "QUIX-")
+
+        entry_type_var.trace_add("write", refresh_form_for_type)
+        refresh_form_for_type()
+
         save_btn = tk.Button(
             window,
             text="Save log",
@@ -513,6 +593,8 @@ class LoginWindow(tk.Tk):
                 hours_entry.get().strip(),
                 description_text.get("1.0", "end").strip(),
                 comment_text.get("1.0", "end").strip(),
+                entry_type_var.get(),
+                off_type_var.get(),
                 window,
             ),
         )
@@ -544,16 +626,48 @@ class LoginWindow(tk.Tk):
         webbrowser.open(url)
         window.destroy()
 
-    def _save_worklog(self, ticket: str, hours: str, description: str, comment: str, window: tk.Toplevel) -> None:
-        saved = self._append_worklog_entry(ticket, hours, description, comment)
+    def _save_worklog(
+        self,
+        ticket: str,
+        hours: str,
+        description: str,
+        comment: str,
+        entry_type: str,
+        off_type: str,
+        window: tk.Toplevel,
+    ) -> None:
+        saved = self._append_worklog_entry(
+            ticket,
+            hours,
+            description,
+            comment,
+            entry_type=entry_type,
+            off_type=off_type,
+        )
         if not saved:
             return
 
         window.destroy()
         messagebox.showinfo("Saved", "Working time logged locally.")
 
-    def _append_worklog_entry(self, ticket: str, hours: str, description: str, comment: str) -> bool:
-        return self._append_worklog_entry_with_status(ticket, hours, description, comment)
+    def _append_worklog_entry(
+        self,
+        ticket: str,
+        hours: str,
+        description: str,
+        comment: str,
+        *,
+        entry_type: str = "work",
+        off_type: str = "",
+    ) -> bool:
+        return self._append_worklog_entry_with_status(
+            ticket,
+            hours,
+            description,
+            comment,
+            entry_type=entry_type,
+            off_type=off_type,
+        )
 
     def _append_worklog_entry_with_status(
         self,
@@ -566,14 +680,20 @@ class LoginWindow(tk.Tk):
         api_synced_at: str = "",
         api_ticket_uuid: str = "",
         api_month_displacement: str = "",
+        entry_type: str = "work",
+        off_type: str = "",
     ) -> bool:
-        ticket_code = self._normalize_ticket_code(ticket)
-        if not ticket_code:
-            messagebox.showerror("Error", "Ticket is required.")
-            return False
-        if ticket_code == "QUIX-":
-            messagebox.showerror("Error", "Insert a valid ticket code.")
-            return False
+        normalized_type = "off" if str(entry_type).strip().lower() == "off" else "work"
+        if normalized_type == "off":
+            ticket_code = "OFF"
+        else:
+            ticket_code = self._normalize_ticket_code(ticket)
+            if not ticket_code:
+                messagebox.showerror("Error", "Ticket is required.")
+                return False
+            if ticket_code == "QUIX-":
+                messagebox.showerror("Error", "Insert a valid ticket code.")
+                return False
 
         parsed = self._parse_working_time(hours)
         if parsed is None:
@@ -588,7 +708,12 @@ class LoginWindow(tk.Tk):
             messagebox.showerror("Error", "Comment is required.")
             return False
 
-        ticket_description = description.strip() or self._find_ticket_description(ticket_code)
+        if normalized_type == "off":
+            ticket_description = description.strip() or "annual leave"
+            normalized_off_type = off_type.strip() or "Annual Leave"
+        else:
+            ticket_description = description.strip() or self._find_ticket_description(ticket_code)
+            normalized_off_type = ""
 
         item = {
             "working_time": working_time_label,
@@ -597,6 +722,9 @@ class LoginWindow(tk.Tk):
             "ticket": ticket_code,
             "comment": comment,
             "description": ticket_description,
+            "entry_type": normalized_type,
+            "off_type": normalized_off_type,
+            "log_date": datetime.now().date().isoformat(),
             "api_synced": "true" if api_synced else "",
             "api_synced_at": api_synced_at,
             "api_ticket_uuid": api_ticket_uuid,
@@ -695,19 +823,22 @@ class LoginWindow(tk.Tk):
             ticket_actions = tk.Frame(top, bg="#171a20")
             ticket_actions.pack(side="right")
 
-            tk.Button(
-                ticket_actions,
-                text="Open ticket",
-                font=("Segoe UI", 9),
-                bg="#3a3a40",
-                fg="#f4f4f6",
-                activebackground="#4a4a50",
-                activeforeground="#ffffff",
-                relief="flat",
-                padx=8,
-                pady=3,
-                command=lambda ticket_code=ticket: self._open_ticket_for_row(ticket_code),
-            ).pack(side="left", padx=(0, 4))
+            is_off_ticket = ticket == "OFF"
+
+            if not is_off_ticket:
+                tk.Button(
+                    ticket_actions,
+                    text="Open ticket",
+                    font=("Segoe UI", 9),
+                    bg="#3a3a40",
+                    fg="#f4f4f6",
+                    activebackground="#4a4a50",
+                    activeforeground="#ffffff",
+                    relief="flat",
+                    padx=8,
+                    pady=3,
+                    command=lambda ticket_code=ticket: self._open_ticket_for_row(ticket_code),
+                ).pack(side="left", padx=(0, 4))
 
             tk.Button(
                 ticket_actions,
@@ -739,7 +870,7 @@ class LoginWindow(tk.Tk):
 
             tk.Button(
                 ticket_actions,
-                text="API sync ticket",
+                text="API sync off" if is_off_ticket else "API sync ticket",
                 font=("Segoe UI", 9),
                 bg="#3a3a40",
                 fg="#f4f4f6",
@@ -949,6 +1080,10 @@ class LoginWindow(tk.Tk):
         endpoint_var = tk.StringVar(value="/api/working_hours/form")
         endpoint_choices = {
             "Log working hours": "/api/working_hours/form",
+            "Add extra off / leave": "/api/extrahours/add",
+            "Clockify tasks": "/api/extrahours/clockify_tasks",
+            "Clockify users": "/api/extrahours/clockify_users",
+            "Remove extra hours": "/api/extrahours/remove",
             "Update ticket fields": "/api/tickets/update",
             "Save ticket status comments": "/api/tickets/status_comments",
             "Custom endpoint": "/api/tickets/update",
@@ -1019,6 +1154,21 @@ class LoginWindow(tk.Tk):
                     "MonthDisplacement": month_displacement_entry.get().strip() or "0",
                     "Reason": comment_value,
                     "WorkingTime": working_time_value,
+                }
+            elif endpoint_path == "/api/extrahours/add":
+                parsed_hours = self._parse_working_time(working_time_value)
+                hours_value = parsed_hours[1] if parsed_hours is not None else 8
+                template = {
+                    "Type": "Annual Leave",
+                    "Hours": int(hours_value) if float(hours_value).is_integer() else hours_value,
+                    "Date": datetime.now().date().isoformat(),
+                    "Description": comment_value,
+                }
+            elif endpoint_path in {"/api/extrahours/clockify_tasks", "/api/extrahours/clockify_users"}:
+                template = {}
+            elif endpoint_path == "/api/extrahours/remove":
+                template = {
+                    "Id": "",
                 }
             else:
                 template = {
@@ -1109,8 +1259,15 @@ class LoginWindow(tk.Tk):
                 payload_text.delete("1.0", "end")
                 payload_text.insert("1.0", json.dumps(payload, indent=2, ensure_ascii=False))
 
+            method = "POST"
+            if endpoint_path in {"/api/extrahours/clockify_tasks", "/api/extrahours/clockify_users"}:
+                method = "GET"
+
             try:
-                response = self.api_client.request_json("POST", endpoint_path, self.api_token, payload)
+                if method == "GET":
+                    response = self.api_client.request_query(endpoint_path, self.api_token, payload)
+                else:
+                    response = self.api_client.request_json("POST", endpoint_path, self.api_token, payload)
             except Exception as exc:  # noqa: BLE001 - surface the API error returned by the service
                 status_var.set("API request failed")
                 messagebox.showerror("API request failed", str(exc))
@@ -1119,6 +1276,9 @@ class LoginWindow(tk.Tk):
             status_var.set(f"Request sent to {endpoint_path}")
             write_response(response.payload)
             if save_local_var.get():
+                if endpoint_path in {"/api/extrahours/clockify_tasks", "/api/extrahours/clockify_users"}:
+                    messagebox.showinfo("Success", "API request completed.")
+                    return
                 if endpoint_path == "/api/working_hours/form":
                     saved = self._append_worklog_entry_with_status(
                         ticket_entry.get().strip(),
@@ -1129,6 +1289,20 @@ class LoginWindow(tk.Tk):
                         api_synced_at=datetime.now().isoformat(timespec="seconds"),
                         api_ticket_uuid=resolved_uuid,
                         api_month_displacement=month_displacement,
+                    )
+                elif endpoint_path == "/api/extrahours/add":
+                    off_type = "Annual Leave"
+                    if payload is not None:
+                        off_type = str(payload.get("Type") or payload.get("type") or off_type)
+                    saved = self._append_worklog_entry_with_status(
+                        "OFF",
+                        working_time_entry.get().strip(),
+                        local_comment_entry.get().strip() or "annual leave",
+                        local_comment_entry.get().strip() or "annual leave",
+                        api_synced=True,
+                        api_synced_at=datetime.now().isoformat(timespec="seconds"),
+                        entry_type="off",
+                        off_type=off_type,
                     )
                 else:
                     saved = self._append_worklog_entry(
@@ -1265,15 +1439,16 @@ class LoginWindow(tk.Tk):
         target_month = self._get_summary_month()
         month_rows = [row for row in self.work_logs if str(row.get("month", "")) == target_month]
         local_total = sum(self._hours_from_worklog_row(row) for row in month_rows)
-        synced_total = sum(self._hours_from_worklog_row(row) for row in month_rows if self._is_worklog_synced(row))
-        pending_total = local_total - synced_total
+        synced_total = sum(self._hours_from_worklog_row(row) for row in month_rows if self._is_api_syncable(row) and self._is_worklog_synced(row))
+        pending_total = sum(self._hours_from_worklog_row(row) for row in month_rows if self._is_api_syncable(row) and not self._is_worklog_synced(row))
+        off_total = sum(self._hours_from_worklog_row(row) for row in month_rows if self._is_off_entry(row))
         target_total = self._expected_month_hours(target_month)
         missing_total = max(target_total - local_total, 0.0)
         verification = "OK" if abs(local_total - target_total) < 1e-9 else "CHECK"
         view_name = "Current Month" if self.selected_month_offset == 0 else "Previous Month"
         self.month_view_var.set(f"View: {view_name} ({target_month})")
         self.summary_var.set(
-            f"{target_month}  Total: {target_total:g}h ({verification})  Local: {local_total:g}h  API synced: {synced_total:g}h  Pending: {pending_total:g}h  Missing: {missing_total:g}h"
+            f"{target_month}  Total: {target_total:g}h ({verification})  Local: {local_total:g}h  Extra Off: {off_total:g}h  API synced: {synced_total:g}h  Pending: {pending_total:g}h  Missing: {missing_total:g}h"
         )
 
     def _expected_month_hours(self, month_label: str) -> float:
@@ -1337,9 +1512,59 @@ class LoginWindow(tk.Tk):
     def _is_worklog_synced(self, row: dict[str, str]) -> bool:
         return str(row.get("api_synced", "")).lower() == "true"
 
+    def _is_off_entry(self, row: dict[str, str]) -> bool:
+        return str(row.get("entry_type", "work")).strip().lower() == "off"
+
+    def _is_api_syncable(self, row: dict[str, str]) -> bool:
+        return True
+
+    def _extra_hours_type_from_row(self, row: dict[str, str]) -> str:
+        raw = str(row.get("off_type", "")).strip()
+        if raw:
+            return raw
+        description = str(row.get("description", "")).strip()
+        if description:
+            return description
+        return "Annual Leave"
+
+    def _extra_hours_date_from_row(self, row: dict[str, str]) -> str:
+        raw = str(row.get("log_date", "")).strip()
+        if raw:
+            return raw
+        return datetime.now().date().isoformat()
+
+    def _build_extra_hours_payload_for_row(self, row: dict[str, str]) -> list[dict[str, object]]:
+        hours_value = self._hours_from_worklog_row(row)
+        date_value = self._extra_hours_date_from_row(row)
+        type_value = self._extra_hours_type_from_row(row)
+        description_value = str(row.get("comment", "")).strip() or str(row.get("description", "")).strip() or "extra off"
+        integer_hours = int(hours_value) if float(hours_value).is_integer() else hours_value
+
+        # Try common payload shapes because the API schema can differ by deployment.
+        return [
+            {
+                "Type": type_value,
+                "Hours": integer_hours,
+                "Date": date_value,
+                "Description": description_value,
+            },
+            {
+                "type": type_value,
+                "hours": integer_hours,
+                "date": date_value,
+                "description": description_value,
+            },
+            {
+                "ExtraType": type_value,
+                "WorkingTime": f"{hours_value:g}h",
+                "WorkDate": date_value,
+                "Reason": description_value,
+            },
+        ]
+
     def _format_sync_status(self, row: dict[str, str]) -> str:
         if not self._is_worklog_synced(row):
-            return "Pending API"
+            return "Off pending API" if self._is_off_entry(row) else "Pending API"
 
         synced_at = str(row.get("api_synced_at", "")).strip()
         if not synced_at:
@@ -1351,7 +1576,8 @@ class LoginWindow(tk.Tk):
             short_stamp = parsed.strftime("%Y-%m-%d %H:%M")
         except ValueError:
             short_stamp = synced_at.replace("T", " ")[:16]
-        return f"Synced {short_stamp}"
+        prefix = "Off synced" if self._is_off_entry(row) else "Synced"
+        return f"{prefix} {short_stamp}"
 
     def _month_displacement_for_label(self, month_label: str) -> str:
         try:
@@ -1392,6 +1618,25 @@ class LoginWindow(tk.Tk):
         row["api_ticket_uuid"] = resolved_uuid
         row["api_month_displacement"] = month_displacement
 
+    def _mark_row_as_extra_hours_synced(self, row: dict[str, str]) -> None:
+        row["api_synced"] = "true"
+        row["api_synced_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        row["api_ticket_uuid"] = ""
+        row["api_month_displacement"] = ""
+
+    def _sync_extra_hours_row(self, token: str, row: dict[str, str]) -> None:
+        attempts = self._build_extra_hours_payload_for_row(row)
+        last_error: Exception | None = None
+        for payload in attempts:
+            try:
+                self.api_client.request_json("POST", "/api/extrahours/add", token, payload)
+                self._mark_row_as_extra_hours_synced(row)
+                return
+            except Exception as exc:  # noqa: BLE001 - try the next payload shape
+                last_error = exc
+
+        raise RuntimeError(f"Failed to sync extra off entry with /api/extrahours/add: {last_error}")
+
     def _sync_single_worklog(self, index: int) -> None:
         if index < 0 or index >= len(self.work_logs):
             return
@@ -1403,9 +1648,12 @@ class LoginWindow(tk.Tk):
         try:
             token = self._ensure_api_session()
             row = self.work_logs[index]
-            resolved_uuid, payload = self._build_api_payload_for_row(row, token)
-            self.api_client.request_json("POST", "/api/working_hours/form", token, payload)
-            self._mark_row_as_synced(row, resolved_uuid, payload["MonthDisplacement"])
+            if self._is_off_entry(row):
+                self._sync_extra_hours_row(token, row)
+            else:
+                resolved_uuid, payload = self._build_api_payload_for_row(row, token)
+                self.api_client.request_json("POST", "/api/working_hours/form", token, payload)
+                self._mark_row_as_synced(row, resolved_uuid, payload["MonthDisplacement"])
         except Exception as exc:  # noqa: BLE001 - surface remote API failure
             messagebox.showerror("API sync failed", str(exc))
             return
@@ -1419,7 +1667,7 @@ class LoginWindow(tk.Tk):
         indexes = [
             index
             for index, row in enumerate(self.work_logs)
-            if str(row.get("ticket", "")) == normalized_ticket and not self._is_worklog_synced(row)
+            if str(row.get("ticket", "")) == normalized_ticket and self._is_api_syncable(row) and not self._is_worklog_synced(row)
         ]
         self._sync_multiple_worklogs(indexes, f"ticket {normalized_ticket}")
 
@@ -1428,7 +1676,7 @@ class LoginWindow(tk.Tk):
         indexes = [
             index
             for index, row in enumerate(self.work_logs)
-            if str(row.get("month", "")) == target_month and not self._is_worklog_synced(row)
+            if str(row.get("month", "")) == target_month and self._is_api_syncable(row) and not self._is_worklog_synced(row)
         ]
         self._sync_multiple_worklogs(indexes, f"month {target_month}")
 
@@ -1448,13 +1696,19 @@ class LoginWindow(tk.Tk):
         failures: list[str] = []
         for index in indexes:
             row = self.work_logs[index]
+            if not self._is_api_syncable(row):
+                skipped_count += 1
+                continue
             if self._is_worklog_synced(row):
                 skipped_count += 1
                 continue
             try:
-                resolved_uuid, payload = self._build_api_payload_for_row(row, token)
-                self.api_client.request_json("POST", "/api/working_hours/form", token, payload)
-                self._mark_row_as_synced(row, resolved_uuid, payload["MonthDisplacement"])
+                if self._is_off_entry(row):
+                    self._sync_extra_hours_row(token, row)
+                else:
+                    resolved_uuid, payload = self._build_api_payload_for_row(row, token)
+                    self.api_client.request_json("POST", "/api/working_hours/form", token, payload)
+                    self._mark_row_as_synced(row, resolved_uuid, payload["MonthDisplacement"])
                 synced_count += 1
             except Exception as exc:  # noqa: BLE001 - continue remaining rows and summarize errors
                 failures.append(f"{row.get('ticket', '')}: {exc}")
