@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+import calendar
+from datetime import date, datetime, timedelta
 import re
 import tkinter as tk
 import webbrowser
@@ -155,41 +156,24 @@ class LoginWindow(tk.Tk):
         topbar = tk.Frame(dashboard, bg="#1f1f22")
         topbar.pack(fill="x", anchor="n")
 
-        search_entry = tk.Entry(topbar, font=("Segoe UI", 12), width=34)
-        search_entry.insert(0, "Search")
-        search_entry.pack(side="right", padx=(0, 12), pady=(0, 18))
-
-        profile_btn = tk.Button(
+        summary_label = tk.Label(
             topbar,
-            text="MP",
-            font=("Segoe UI", 12, "bold"),
-            bg="#ff6a00",
-            fg="#ffffff",
-            activebackground="#e65f00",
-            activeforeground="#ffffff",
-            relief="flat",
-            width=4,
-            command=lambda: self._show_profile_menu(profile_btn),
-        )
-        profile_btn.pack(side="right", pady=(0, 18))
-
-        ticket_btn = tk.Button(
-            topbar,
-            text="Open Ticket",
+            textvariable=self.summary_var,
             font=("Segoe UI", 10, "bold"),
-            bg="#3a3a40",
             fg="#f4f4f6",
-            activebackground="#4a4a50",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=14,
-            pady=8,
-            command=self._open_ticket_window,
+            bg="#1f1f22",
+            anchor="w",
         )
-        ticket_btn.pack(side="right", padx=(0, 12), pady=(0, 18))
+        summary_label.pack(fill="x", padx=(0, 18), pady=(0, 10))
+
+        controls_row = tk.Frame(dashboard, bg="#1f1f22")
+        controls_row.pack(fill="x", anchor="n", pady=(0, 6))
+
+        action_row = tk.Frame(controls_row, bg="#1f1f22")
+        action_row.pack(side="left")
 
         monthly_report_btn = tk.Button(
-            topbar,
+            action_row,
             text="Monthly Report",
             font=("Segoe UI", 10, "bold"),
             bg="#3a3a40",
@@ -201,10 +185,25 @@ class LoginWindow(tk.Tk):
             pady=8,
             command=self._open_monthly_report,
         )
-        monthly_report_btn.pack(side="right", padx=(0, 12), pady=(0, 18))
+        monthly_report_btn.pack(side="left", padx=(0, 12), pady=(0, 18))
+
+        ticket_btn = tk.Button(
+            action_row,
+            text="Open Ticket",
+            font=("Segoe UI", 10, "bold"),
+            bg="#3a3a40",
+            fg="#f4f4f6",
+            activebackground="#4a4a50",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=14,
+            pady=8,
+            command=self._open_ticket_window,
+        )
+        ticket_btn.pack(side="left", padx=(0, 12), pady=(0, 18))
 
         sync_month_btn = tk.Button(
-            topbar,
+            action_row,
             text="API Sync Month",
             font=("Segoe UI", 10, "bold"),
             bg="#3a3a40",
@@ -216,31 +215,28 @@ class LoginWindow(tk.Tk):
             pady=8,
             command=self._sync_current_month,
         )
-        sync_month_btn.pack(side="right", padx=(0, 12), pady=(0, 18))
+        sync_month_btn.pack(side="left", pady=(0, 18))
 
-        api_test_btn = tk.Button(
-            topbar,
-            text="API Ticket Update",
-            font=("Segoe UI", 10, "bold"),
-            bg="#3a3a40",
-            fg="#f4f4f6",
-            activebackground="#4a4a50",
+        account_row = tk.Frame(controls_row, bg="#1f1f22")
+        account_row.pack(side="right")
+
+        search_entry = tk.Entry(account_row, font=("Segoe UI", 12), width=34)
+        search_entry.insert(0, "Search")
+        search_entry.pack(side="right", padx=(0, 12), pady=(0, 18))
+
+        profile_btn = tk.Button(
+            account_row,
+            text="MP",
+            font=("Segoe UI", 12, "bold"),
+            bg="#ff6a00",
+            fg="#ffffff",
+            activebackground="#e65f00",
             activeforeground="#ffffff",
             relief="flat",
-            padx=14,
-            pady=8,
-            command=self._open_api_update_window,
+            width=4,
+            command=lambda: self._show_profile_menu(profile_btn),
         )
-        api_test_btn.pack(side="right", padx=(0, 12), pady=(0, 18))
-
-        summary_label = tk.Label(
-            topbar,
-            textvariable=self.summary_var,
-            font=("Segoe UI", 10, "bold"),
-            fg="#f4f4f6",
-            bg="#1f1f22",
-        )
-        summary_label.pack(side="right", padx=(0, 18), pady=(0, 18))
+        profile_btn.pack(side="right", pady=(0, 18))
 
         first_name = username.split("@")[0].split(".")[0].capitalize() if username else "Marco"
         welcome = tk.Label(
@@ -362,7 +358,6 @@ class LoginWindow(tk.Tk):
         menu.add_command(label="Company Profiles")
         menu.add_command(label="Legal Documents")
         menu.add_command(label="My Subscriptions")
-        menu.add_command(label="API Ticket Update", command=self._open_api_update_window)
         menu.add_separator()
         menu.add_command(label="Logout", command=self._logout)
 
@@ -1272,11 +1267,68 @@ class LoginWindow(tk.Tk):
         local_total = sum(self._hours_from_worklog_row(row) for row in month_rows)
         synced_total = sum(self._hours_from_worklog_row(row) for row in month_rows if self._is_worklog_synced(row))
         pending_total = local_total - synced_total
+        target_total = self._expected_month_hours(target_month)
+        missing_total = max(target_total - local_total, 0.0)
+        verification = "OK" if abs(local_total - target_total) < 1e-9 else "CHECK"
         view_name = "Current Month" if self.selected_month_offset == 0 else "Previous Month"
         self.month_view_var.set(f"View: {view_name} ({target_month})")
         self.summary_var.set(
-            f"{target_month}  Local: {local_total:g}h  API synced: {synced_total:g}h  Pending: {pending_total:g}h"
+            f"{target_month}  Total: {target_total:g}h ({verification})  Local: {local_total:g}h  API synced: {synced_total:g}h  Pending: {pending_total:g}h  Missing: {missing_total:g}h"
         )
+
+    def _expected_month_hours(self, month_label: str) -> float:
+        try:
+            target = datetime.strptime(month_label, "%B %Y")
+        except ValueError:
+            return 0.0
+
+        year = target.year
+        month = target.month
+        _, days_in_month = calendar.monthrange(year, month)
+        italian_holidays = self._italian_public_holidays(year)
+
+        business_days = 0
+        for day in range(1, days_in_month + 1):
+            current_day = date(year, month, day)
+            if current_day.weekday() < 5 and current_day not in italian_holidays:
+                business_days += 1
+
+        return float(business_days * 8)
+
+    def _italian_public_holidays(self, year: int) -> set[date]:
+        easter_sunday = self._easter_sunday(year)
+        easter_monday = easter_sunday + timedelta(days=1)
+        return {
+            date(year, 1, 1),
+            date(year, 1, 6),
+            date(year, 4, 25),
+            date(year, 5, 1),
+            date(year, 6, 2),
+            date(year, 8, 15),
+            date(year, 11, 1),
+            date(year, 12, 8),
+            date(year, 12, 25),
+            date(year, 12, 26),
+            easter_monday,
+        }
+
+    def _easter_sunday(self, year: int) -> date:
+        # Anonymous Gregorian algorithm.
+        a = year % 19
+        b = year // 100
+        c = year % 100
+        d = b // 4
+        e = b % 4
+        f = (b + 8) // 25
+        g = (b - f + 1) // 3
+        h = (19 * a + b - d - g + 15) % 30
+        i = c // 4
+        k = c % 4
+        l = (32 + 2 * e + 2 * i - h - k) % 7
+        m = (a + 11 * h + 22 * l) // 451
+        month = (h + l - 7 * m + 114) // 31
+        day = ((h + l - 7 * m + 114) % 31) + 1
+        return date(year, month, day)
 
     def _hours_from_worklog_row(self, row: dict[str, str]) -> float:
         parsed = self._parse_working_time(str(row.get("working_time", "")))
