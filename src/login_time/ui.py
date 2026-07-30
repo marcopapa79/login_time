@@ -10,6 +10,7 @@ from tkinter import messagebox, ttk
 
 from .api_client import QuixantHubClient
 from .config import (
+    get_clockify_task_id,
     load_credentials,
     load_ticket_uuid_cache,
     load_work_logs,
@@ -35,6 +36,7 @@ class LoginWindow(tk.Tk):
         self.api_client = QuixantHubClient()
         self.api_token = ""
         self.api_token_user = ""
+        self.clockify_user_uuid = ""
         self.ticket_uuid_cache: dict[str, str] = load_ticket_uuid_cache()
         self.summary_var = tk.StringVar(value="")
         self.month_view_var = tk.StringVar(value="")
@@ -566,6 +568,10 @@ class LoginWindow(tk.Tk):
                 ticket_entry.configure(state="disabled")
                 if not description_text.get("1.0", "end").strip():
                     description_text.insert("1.0", "annual leave")
+                current_hours = hours_entry.get().strip().lower()
+                if current_hours in {"", "1h"}:
+                    hours_entry.delete(0, "end")
+                    hours_entry.insert(0, "8h")
             else:
                 off_type_row.pack_forget()
                 ticket_entry.configure(state="normal")
@@ -574,8 +580,29 @@ class LoginWindow(tk.Tk):
                     ticket_entry.delete(0, "end")
                     ticket_entry.insert(0, "QUIX-")
 
+        def refresh_off_defaults(*_: object) -> None:
+            if entry_type_var.get() != "off":
+                return
+
+            selected = off_type_var.get().strip()
+            if not selected:
+                return
+
+            current_description = description_text.get("1.0", "end").strip().lower()
+            generic_defaults = {"", "annual leave", "sick leave", "permit", "other"}
+            if current_description in generic_defaults:
+                description_text.delete("1.0", "end")
+                description_text.insert("1.0", selected.lower())
+
+            current_hours = hours_entry.get().strip().lower()
+            if selected in {"Annual Leave", "Sick Leave"} and current_hours in {"", "1h"}:
+                hours_entry.delete(0, "end")
+                hours_entry.insert(0, "8h")
+
         entry_type_var.trace_add("write", refresh_form_for_type)
+        off_type_var.trace_add("write", refresh_off_defaults)
         refresh_form_for_type()
+        refresh_off_defaults()
 
         save_btn = tk.Button(
             window,
@@ -1158,10 +1185,18 @@ class LoginWindow(tk.Tk):
             elif endpoint_path == "/api/extrahours/add":
                 parsed_hours = self._parse_working_time(working_time_value)
                 hours_value = parsed_hours[1] if parsed_hours is not None else 8
+                decimal_hours = self._format_decimal_hours(hours_value)
+                payload_hours: int | float = int(decimal_hours) if float(decimal_hours).is_integer() else decimal_hours
+                task_id = get_clockify_task_id("Annual Leave")
+                today = datetime.now().date().isoformat()
+                date_variants = self._extra_hours_date_variants(today)
                 template = {
+                    "uuid": "",
                     "Type": "Annual Leave",
-                    "Hours": int(hours_value) if float(hours_value).is_integer() else hours_value,
-                    "Date": datetime.now().date().isoformat(),
+                    "IdClockifyTask": task_id,
+                    "Hours": payload_hours,
+                    "log_date_start": date_variants["it_date"],
+                    "log_date_end": date_variants["it_date"],
                     "Description": comment_value,
                 }
             elif endpoint_path in {"/api/extrahours/clockify_tasks", "/api/extrahours/clockify_users"}:
@@ -1533,34 +1568,51 @@ class LoginWindow(tk.Tk):
             return raw
         return datetime.now().date().isoformat()
 
-    def _build_extra_hours_payload_for_row(self, row: dict[str, str]) -> list[dict[str, object]]:
-        hours_value = self._hours_from_worklog_row(row)
-        date_value = self._extra_hours_date_from_row(row)
-        type_value = self._extra_hours_type_from_row(row)
-        description_value = str(row.get("comment", "")).strip() or str(row.get("description", "")).strip() or "extra off"
-        integer_hours = int(hours_value) if float(hours_value).is_integer() else hours_value
+    def _format_decimal_hours(self, hours_value: float) -> float:
+        """Return hours as decimal float for /api/extrahours/add payloads."""
+        return round(float(hours_value), 2)
 
-        # Try common payload shapes because the API schema can differ by deployment.
-        return [
-            {
-                "Type": type_value,
-                "Hours": integer_hours,
-                "Date": date_value,
-                "Description": description_value,
-            },
-            {
-                "type": type_value,
-                "hours": integer_hours,
-                "date": date_value,
-                "description": description_value,
-            },
-            {
-                "ExtraType": type_value,
-                "WorkingTime": f"{hours_value:g}h",
-                "WorkDate": date_value,
-                "Reason": description_value,
-            },
-        ]
+    def _extra_hours_date_variants(self, iso_date: str) -> dict[str, str]:
+        """Build common date variants accepted by different extra-hours API deployments."""
+        try:
+            parsed = datetime.strptime(iso_date, "%Y-%m-%d")
+        except ValueError:
+            parsed = datetime.now()
+
+        normalized_iso = parsed.strftime("%Y-%m-%d")
+        return {
+            "iso_date": normalized_iso,
+            "iso_datetime": f"{normalized_iso}T00:00:00",
+            "iso_datetime_z": f"{normalized_iso}T00:00:00.000Z",
+            "iso_datetime_end_z": f"{normalized_iso}T23:59:59.999Z",
+            "iso_datetime_space": f"{normalized_iso} 00:00:00",
+            "ymd_slash": parsed.strftime("%Y/%m/%d"),
+            "it_date": parsed.strftime("%d/%m/%Y"),
+            "dmy_dash": parsed.strftime("%d-%m-%Y"),
+            "it_datetime": parsed.strftime("%d/%m/%Y 00:00:00"),
+        }
+
+    def _build_extra_hours_payload_for_row(self, row: dict[str, str], token: str) -> dict[str, object]:
+        hours_value = self._hours_from_worklog_row(row)
+        if hours_value <= 0:
+            raise RuntimeError("Extra off entry has invalid hours (must be > 0).")
+
+        decimal_hours = self._format_decimal_hours(hours_value)
+        date_value = self._extra_hours_date_from_row(row)
+        date_variants = self._extra_hours_date_variants(date_value)
+        type_value = self._extra_hours_type_from_row(row)
+        task_id = get_clockify_task_id(type_value)
+        description_value = str(row.get("comment", "")).strip() or str(row.get("description", "")).strip() or "extra off"
+        payload_hours: int | float = int(decimal_hours) if float(decimal_hours).is_integer() else decimal_hours
+        # Prefill with the currently requested shape; user can still edit before send.
+        return {
+            "uuid": "",
+            "id_clockify_task": task_id,
+            "hours": payload_hours,
+            "log_date_start": date_variants["it_date"],
+            "log_date_end": date_variants["it_date"],
+            "description": description_value,
+        }
 
     def _format_sync_status(self, row: dict[str, str]) -> str:
         if not self._is_worklog_synced(row):
@@ -1599,6 +1651,81 @@ class LoginWindow(tk.Tk):
         self.api_token_user = username
         return token
 
+    def _extract_clockify_user_uuid(self, payload: object, username: str) -> str:
+        target = username.strip().lower()
+        target_short = target.split("@")[0]
+        fallback = ""
+
+        def walk(node: object) -> None:
+            nonlocal fallback
+            if isinstance(node, dict):
+                values = {str(k).lower(): v for k, v in node.items()}
+                uuid_candidate = (
+                    values.get("uuid")
+                    or values.get("id")
+                    or values.get("userid")
+                    or values.get("user_uuid")
+                    or values.get("clockify_user_uuid")
+                    or values.get("clockifyuserid")
+                )
+                uuid_value = str(uuid_candidate).strip() if uuid_candidate is not None else ""
+                if uuid_value and not fallback:
+                    fallback = uuid_value
+
+                user_fields = [
+                    values.get("email"),
+                    values.get("username"),
+                    values.get("user"),
+                    values.get("name"),
+                    values.get("fullname"),
+                ]
+                for field in user_fields:
+                    if not isinstance(field, str):
+                        continue
+                    normalized_field = field.strip().lower()
+                    if uuid_value and (
+                        normalized_field == target
+                        or normalized_field == target_short
+                        or target_short in normalized_field
+                    ):
+                        fallback = uuid_value
+                        return
+
+                for child in node.values():
+                    walk(child)
+
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+
+        walk(payload)
+        return fallback
+
+    def _resolve_clockify_user_uuid(self, token: str) -> str:
+        if self.clockify_user_uuid:
+            return self.clockify_user_uuid
+
+        try:
+            response = self.api_client.request_query("/api/extrahours/clockify_users", token, None)
+        except Exception as exc:  # noqa: BLE001 - keep sync flow alive without uuid
+            print(f"Clockify users lookup failed: {exc}")
+            return ""
+
+        print("Clockify users response payload (first 2000 chars):")
+        try:
+            serialized = json.dumps(response.payload, ensure_ascii=False)
+        except TypeError:
+            serialized = str(response.payload)
+        print(serialized[:2000])
+
+        resolved = self._extract_clockify_user_uuid(response.payload, self.credentials["username"])
+        if not resolved:
+            print("Clockify user uuid not found in /api/extrahours/clockify_users response; proceeding without uuid.")
+            return ""
+
+        self.clockify_user_uuid = resolved
+        return resolved
+
     def _build_api_payload_for_row(self, row: dict[str, str], token: str) -> tuple[str, dict[str, str]]:
         ticket_reference = str(row.get("api_ticket_uuid", "")).strip() or str(row.get("ticket", "")).strip()
         resolved_uuid = self._resolve_ticket_uuid_cached(token, ticket_reference)
@@ -1624,18 +1751,97 @@ class LoginWindow(tk.Tk):
         row["api_ticket_uuid"] = ""
         row["api_month_displacement"] = ""
 
-    def _sync_extra_hours_row(self, token: str, row: dict[str, str]) -> None:
-        attempts = self._build_extra_hours_payload_for_row(row)
-        last_error: Exception | None = None
-        for payload in attempts:
-            try:
-                self.api_client.request_json("POST", "/api/extrahours/add", token, payload)
-                self._mark_row_as_extra_hours_synced(row)
-                return
-            except Exception as exc:  # noqa: BLE001 - try the next payload shape
-                last_error = exc
+    def _debug_log_extra_hours_payload(self, payload: dict[str, object], attempt_index: int) -> None:
+        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        print(f"[{timestamp}] ExtraHours sync attempt {attempt_index} -> POST /api/extrahours/add")
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
 
-        raise RuntimeError(f"Failed to sync extra off entry with /api/extrahours/add: {last_error}")
+    def _edit_extra_hours_payload(self, payload: dict[str, object]) -> dict[str, object] | None:
+        window = tk.Toplevel(self)
+        window.title("Edit Extra Hours Payload")
+        window.geometry("760x520")
+        window.configure(bg="#2b2b30")
+        window.transient(self)
+        window.grab_set()
+
+        tk.Label(
+            window,
+            text="Edit JSON payload before sending to /api/extrahours/add",
+            font=("Segoe UI", 10, "bold"),
+            fg="#f4f4f6",
+            bg="#2b2b30",
+        ).pack(anchor="w", padx=16, pady=(14, 8))
+
+        editor = tk.Text(window, width=90, height=23, font=("Consolas", 10), wrap="none")
+        editor.pack(fill="both", expand=True, padx=16)
+        editor.insert("1.0", json.dumps(payload, indent=2, ensure_ascii=False))
+
+        result: dict[str, object] | None = None
+
+        def send_payload() -> None:
+            nonlocal result
+            raw = editor.get("1.0", "end").strip()
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                messagebox.showerror("Invalid JSON", f"Payload JSON non valido: {exc}")
+                return
+            if not isinstance(parsed, dict):
+                messagebox.showerror("Invalid payload", "Payload must be a JSON object.")
+                return
+            result = parsed
+            window.destroy()
+
+        def cancel_payload() -> None:
+            window.destroy()
+
+        row = tk.Frame(window, bg="#2b2b30")
+        row.pack(fill="x", padx=16, pady=(10, 14))
+
+        tk.Button(
+            row,
+            text="Cancel",
+            font=("Segoe UI", 10),
+            bg="#3a3a40",
+            fg="#f4f4f6",
+            activebackground="#4a4a50",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=12,
+            pady=6,
+            command=cancel_payload,
+        ).pack(side="left")
+
+        tk.Button(
+            row,
+            text="Send",
+            font=("Segoe UI", 10, "bold"),
+            bg="#ff6a00",
+            fg="#ffffff",
+            activebackground="#e65f00",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=12,
+            pady=6,
+            command=send_payload,
+        ).pack(side="right")
+
+        self.wait_window(window)
+        return result
+
+    def _sync_extra_hours_row(self, token: str, row: dict[str, str]) -> bool:
+        payload = self._build_extra_hours_payload_for_row(row, token)
+
+        try:
+            self.api_client.request_json("POST", "/api/extrahours/add", token, payload)
+            self._mark_row_as_extra_hours_synced(row)
+            return True
+        except Exception as exc:  # noqa: BLE001 - expose payload and server error
+            payload_preview = json.dumps(payload, ensure_ascii=False)
+            raise RuntimeError(
+                "Failed to sync extra off entry with /api/extrahours/add: "
+                f"{exc} | Payload: {payload_preview}"
+            ) from exc
 
     def _sync_single_worklog(self, index: int) -> None:
         if index < 0 or index >= len(self.work_logs):
@@ -1649,7 +1855,10 @@ class LoginWindow(tk.Tk):
             token = self._ensure_api_session()
             row = self.work_logs[index]
             if self._is_off_entry(row):
-                self._sync_extra_hours_row(token, row)
+                synced = self._sync_extra_hours_row(token, row)
+                if not synced:
+                    messagebox.showinfo("API sync", "Extra off sync cancelled.")
+                    return
             else:
                 resolved_uuid, payload = self._build_api_payload_for_row(row, token)
                 self.api_client.request_json("POST", "/api/working_hours/form", token, payload)
@@ -1704,7 +1913,10 @@ class LoginWindow(tk.Tk):
                 continue
             try:
                 if self._is_off_entry(row):
-                    self._sync_extra_hours_row(token, row)
+                    synced = self._sync_extra_hours_row(token, row)
+                    if not synced:
+                        skipped_count += 1
+                        continue
                 else:
                     resolved_uuid, payload = self._build_api_payload_for_row(row, token)
                     self.api_client.request_json("POST", "/api/working_hours/form", token, payload)
