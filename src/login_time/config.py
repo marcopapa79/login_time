@@ -11,6 +11,35 @@ _CREDENTIALS_FILE = Path(__file__).resolve().parents[2] / "credentials.json"
 _WORKLOG_FILE = Path(__file__).resolve().parents[2] / "worklogs.json"
 _TICKET_UUID_CACHE_FILE = Path(__file__).resolve().parents[2] / "ticket_uuid_cache.json"
 
+# Clockify task name -> id mapping used by extra-hours API flows.
+CLOCKIFY_TASKS: Dict[str, str] = {
+    "Administration": "64e634463e2c1102ee9ab801",
+    "Customer Meeting": "64e6344d66b77570d7510aaf",
+    "Customer Support": "64e6345466b77570d7510ba9",
+    "Demos": "64e63459ebeee150226d30f6",
+    "Internal Meeting": "64e6345e97f5910c716e1a16",
+    "Research": "64e6346debeee150226d337c",
+    "Suppliers": "64e6347894577124655aab45",
+    "Trade Show": "64e63480ebeee150226d35a2",
+    "Training": "64e6348866b77570d7511303",
+    "Annual Leave": "652434fef8763231c98909ee",
+    "Sick Leave": "652435024eff40535144f947",
+    "Project Management": "68e736e7070e6c76ade5e033",
+    "Hardware": "68e736e7070e6c76ade5e034",
+    "Meeting": "68e736e7070e6c76ade5e035",
+    "Software": "68e736e7117c9a0f0778770b",
+    "Mechanical": "68e736e7117c9a0f0778770c",
+    "Documentation": "68e736e75598f9482af8a6ef",
+    "Support": "68e736e75598f9482af8a6f0",
+}
+
+_CLOCKIFY_TASK_ALIASES: Dict[str, str] = {
+    "ferie": "Annual Leave",
+    "annual leave": "Annual Leave",
+    "sick leave": "Sick Leave",
+    "malattia": "Sick Leave",
+}
+
 
 def load_credentials() -> Dict[str, str]:
     """Load credentials from file, falling back to safe defaults."""
@@ -110,3 +139,28 @@ def save_ticket_uuid_cache(cache: Dict[str, str]) -> None:
             normalized[key] = value
 
     _TICKET_UUID_CACHE_FILE.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
+
+
+def get_clockify_tasks() -> Dict[str, str]:
+    """Return a copy of configured Clockify tasks (name -> id)."""
+    return dict(CLOCKIFY_TASKS)
+
+
+def get_clockify_task_id(task_name: str) -> str:
+    """Resolve Clockify task id from task name, with a few common aliases."""
+    raw = str(task_name).strip()
+    if not raw:
+        return ""
+
+    if raw in CLOCKIFY_TASKS:
+        return CLOCKIFY_TASKS[raw]
+
+    canonical = _CLOCKIFY_TASK_ALIASES.get(raw.lower(), raw)
+    if canonical in CLOCKIFY_TASKS:
+        return CLOCKIFY_TASKS[canonical]
+
+    for name, task_id in CLOCKIFY_TASKS.items():
+        if name.lower() == raw.lower():
+            return task_id
+
+    return ""
