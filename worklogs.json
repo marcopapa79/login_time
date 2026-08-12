@@ -1,5 +1,20 @@
 [
   {
+    "working_time": "3h",
+    "month": "August 2026",
+    "work_log": "Imported manually from QxSupport web",
+    "ticket": "QXSUPPORT",
+    "comment": "Imported manually from QxSupport web",
+    "description": "QxSupport monthly import",
+    "entry_type": "qxsupport_synced",
+    "off_type": "",
+    "log_date": "2026-08-12",
+    "api_synced": "true",
+    "api_synced_at": "2026-08-12T13:56:27+02:00",
+    "api_ticket_uuid": "",
+    "api_month_displacement": "0"
+  },
+  {
     "working_time": "42h",
     "month": "July 2026",
     "work_log": "chiappa su",
