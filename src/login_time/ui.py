@@ -219,6 +219,21 @@ class LoginWindow(tk.Tk):
         )
         sync_month_btn.pack(side="left", pady=(0, 18))
 
+        import_qxsupport_btn = tk.Button(
+            action_row,
+            text="Import QxSupport Month",
+            font=("Segoe UI", 10, "bold"),
+            bg="#3a3a40",
+            fg="#f4f4f6",
+            activebackground="#4a4a50",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=14,
+            pady=8,
+            command=self._import_qxsupport_current_month,
+        )
+        import_qxsupport_btn.pack(side="left", padx=(12, 0), pady=(0, 18))
+
         account_row = tk.Frame(controls_row, bg="#1f1f22")
         account_row.pack(side="right")
 
@@ -303,6 +318,21 @@ class LoginWindow(tk.Tk):
             command=lambda: self._open_worklog_window("off"),
         )
         add_off_btn.pack(side="left", padx=(10, 0))
+
+        add_qxsupport_synced_btn = tk.Button(
+            ticket_actions,
+            text="+ Add QxSupport (synced)",
+            font=("Segoe UI", 10),
+            bg="#14161b",
+            fg="#f4f4f6",
+            activebackground="#1d2129",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=4,
+            pady=4,
+            command=lambda: self._open_worklog_window("qxsupport_synced"),
+        )
+        add_qxsupport_synced_btn.pack(side="left", padx=(10, 0))
 
         month_switcher = tk.Frame(ticket_actions, bg="#14161b")
         month_switcher.pack(side="left", padx=(18, 0))
@@ -480,7 +510,14 @@ class LoginWindow(tk.Tk):
         window.transient(self)
         window.grab_set()
 
-        entry_type_var = tk.StringVar(value="off" if default_entry_type == "off" else "work")
+        if default_entry_type == "off":
+            default_type = "off"
+        elif default_entry_type == "qxsupport_synced":
+            default_type = "qxsupport_synced"
+        else:
+            default_type = "work"
+
+        entry_type_var = tk.StringVar(value=default_type)
         off_type_var = tk.StringVar(value="Annual Leave")
 
         tk.Label(window, text="Ticket", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(16, 6))
@@ -516,6 +553,18 @@ class LoginWindow(tk.Tk):
             activebackground="#2b2b30",
             activeforeground="#f4f4f6",
         ).pack(side="left")
+        tk.Radiobutton(
+            type_row,
+            text="QxSupport (already synced)",
+            value="qxsupport_synced",
+            variable=entry_type_var,
+            font=("Segoe UI", 10),
+            fg="#f4f4f6",
+            bg="#2b2b30",
+            selectcolor="#2b2b30",
+            activebackground="#2b2b30",
+            activeforeground="#f4f4f6",
+        ).pack(side="left", padx=(10, 0))
 
         off_type_row = tk.Frame(window, bg="#2b2b30")
         off_type_row.pack(anchor="w", padx=20, pady=(8, 0))
@@ -560,7 +609,9 @@ class LoginWindow(tk.Tk):
         comment_text.pack(anchor="w", padx=20)
 
         def refresh_form_for_type(*_: object) -> None:
-            is_off = entry_type_var.get() == "off"
+            selected_type = entry_type_var.get()
+            is_off = selected_type == "off"
+            is_qxsupport_synced = selected_type == "qxsupport_synced"
             if is_off:
                 off_type_row.pack(anchor="w", padx=20, pady=(8, 0))
                 ticket_entry.delete(0, "end")
@@ -572,11 +623,21 @@ class LoginWindow(tk.Tk):
                 if current_hours in {"", "1h"}:
                     hours_entry.delete(0, "end")
                     hours_entry.insert(0, "8h")
+            elif is_qxsupport_synced:
+                off_type_row.pack_forget()
+                ticket_entry.configure(state="normal")
+                ticket_entry.delete(0, "end")
+                ticket_entry.insert(0, "QXSUPPORT")
+                ticket_entry.configure(state="disabled")
+                if not description_text.get("1.0", "end").strip():
+                    description_text.insert("1.0", "QxSupport monthly import")
+                if not comment_text.get("1.0", "end").strip():
+                    comment_text.insert("1.0", "Imported manually from QxSupport web")
             else:
                 off_type_row.pack_forget()
                 ticket_entry.configure(state="normal")
                 current_ticket = ticket_entry.get().strip().upper()
-                if current_ticket in {"", "OFF", "QUIX-"}:
+                if current_ticket in {"", "OFF", "QUIX-", "QXSUPPORT"}:
                     ticket_entry.delete(0, "end")
                     ticket_entry.insert(0, "QUIX-")
 
@@ -711,8 +772,12 @@ class LoginWindow(tk.Tk):
         off_type: str = "",
     ) -> bool:
         normalized_type = "off" if str(entry_type).strip().lower() == "off" else "work"
+        if str(entry_type).strip().lower() == "qxsupport_synced":
+            normalized_type = "qxsupport_synced"
         if normalized_type == "off":
             ticket_code = "OFF"
+        elif normalized_type == "qxsupport_synced":
+            ticket_code = "QXSUPPORT"
         else:
             ticket_code = self._normalize_ticket_code(ticket)
             if not ticket_code:
@@ -738,9 +803,17 @@ class LoginWindow(tk.Tk):
         if normalized_type == "off":
             ticket_description = description.strip() or "annual leave"
             normalized_off_type = off_type.strip() or "Annual Leave"
+        elif normalized_type == "qxsupport_synced":
+            ticket_description = description.strip() or "QxSupport monthly import"
+            normalized_off_type = ""
         else:
             ticket_description = description.strip() or self._find_ticket_description(ticket_code)
             normalized_off_type = ""
+
+        force_synced = normalized_type == "qxsupport_synced"
+        synced_at_value = api_synced_at
+        if force_synced and not synced_at_value:
+            synced_at_value = datetime.now().astimezone().isoformat(timespec="seconds")
 
         item = {
             "working_time": working_time_label,
@@ -752,10 +825,10 @@ class LoginWindow(tk.Tk):
             "entry_type": normalized_type,
             "off_type": normalized_off_type,
             "log_date": datetime.now().date().isoformat(),
-            "api_synced": "true" if api_synced else "",
-            "api_synced_at": api_synced_at,
+            "api_synced": "true" if api_synced or force_synced else "",
+            "api_synced_at": synced_at_value,
             "api_ticket_uuid": api_ticket_uuid,
-            "api_month_displacement": api_month_displacement,
+            "api_month_displacement": api_month_displacement if api_month_displacement else self._month_displacement_for_label(self._get_summary_month()),
         }
         self.work_logs.insert(0, item)
         save_work_logs(self.work_logs)
@@ -1888,6 +1961,262 @@ class LoginWindow(tk.Tk):
             if str(row.get("month", "")) == target_month and self._is_api_syncable(row) and not self._is_worklog_synced(row)
         ]
         self._sync_multiple_worklogs(indexes, f"month {target_month}")
+
+    def _import_qxsupport_current_month(self) -> None:
+        target_month = self._get_summary_month()
+        try:
+            token = self._ensure_api_session()
+        except Exception as exc:  # noqa: BLE001 - surface login failure
+            messagebox.showerror("QxSupport import failed", str(exc))
+            return
+
+        try:
+            detailed_rows, aggregate_hours = self._fetch_qxsupport_remote_data(token, target_month)
+        except Exception as exc:  # noqa: BLE001 - surface remote fetch failure
+            messagebox.showerror("QxSupport import failed", str(exc))
+            return
+
+        added = 0
+        skipped = 0
+        now_stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        existing_signatures = {
+            self._import_signature(
+                str(row.get("month", "")),
+                str(row.get("ticket", "")),
+                str(row.get("working_time", "")),
+                str(row.get("comment", "")),
+            )
+            for row in self.work_logs
+        }
+
+        if detailed_rows:
+            for entry in detailed_rows:
+                signature = self._import_signature(target_month, entry["ticket"], entry["working_time"], entry["comment"])
+                if signature in existing_signatures:
+                    skipped += 1
+                    continue
+
+                self.work_logs.insert(
+                    0,
+                    {
+                        "working_time": entry["working_time"],
+                        "month": target_month,
+                        "work_log": entry["comment"],
+                        "ticket": entry["ticket"],
+                        "comment": entry["comment"],
+                        "description": entry["description"],
+                        "entry_type": "work",
+                        "off_type": "",
+                        "log_date": entry["log_date"],
+                        "api_synced": "true",
+                        "api_synced_at": now_stamp,
+                        "api_ticket_uuid": str(entry.get("api_ticket_uuid", "")),
+                        "api_month_displacement": self._month_displacement_for_label(target_month),
+                    },
+                )
+                existing_signatures.add(signature)
+                added += 1
+        elif aggregate_hours > 0:
+            working_time_label = f"{aggregate_hours:g}h"
+            ticket_code = "QXSUPPORT"
+            comment = f"Imported from QxSupport monthly report ({target_month})"
+            signature = self._import_signature(target_month, ticket_code, working_time_label, comment)
+            if signature in existing_signatures:
+                skipped += 1
+            else:
+                self.work_logs.insert(
+                    0,
+                    {
+                        "working_time": working_time_label,
+                        "month": target_month,
+                        "work_log": comment,
+                        "ticket": ticket_code,
+                        "comment": comment,
+                        "description": "QxSupport monthly import",
+                        "entry_type": "work",
+                        "off_type": "",
+                        "log_date": datetime.now().date().isoformat(),
+                        "api_synced": "true",
+                        "api_synced_at": now_stamp,
+                        "api_ticket_uuid": "",
+                        "api_month_displacement": self._month_displacement_for_label(target_month),
+                    },
+                )
+                added += 1
+        else:
+            messagebox.showinfo(
+                "QxSupport import",
+                f"No QxSupport hours found for {target_month} from the available API endpoints.",
+            )
+            return
+
+        save_work_logs(self.work_logs)
+        self._render_worklogs()
+        messagebox.showinfo(
+            "QxSupport import",
+            f"Imported {added} rows for {target_month}. Skipped duplicates: {skipped}.",
+        )
+
+    def _fetch_qxsupport_remote_data(self, token: str, month_label: str) -> tuple[list[dict[str, str]], float]:
+        displacement = self._month_displacement_for_label(month_label)
+        endpoint_candidates = [
+            ("/api/working_hours/list", {"MonthDisplacement": displacement}),
+            ("/api/working_hours/list", {"monthDisplacement": displacement}),
+            ("/api/working_hours/report", {"MonthDisplacement": displacement}),
+            ("/api/monthlyreport", {"MonthDisplacement": displacement}),
+            ("/api/admin/monthlyreport", {"MonthDisplacement": displacement}),
+            ("/api/reports/monthly", {"MonthDisplacement": displacement}),
+        ]
+
+        best_aggregate = 0.0
+        for path, query in endpoint_candidates:
+            try:
+                response = self.api_client.request_query(path, token, query)
+            except Exception:
+                continue
+
+            detailed_rows = self._extract_qxsupport_detailed_rows(response.payload)
+            if detailed_rows:
+                return detailed_rows, 0.0
+
+            aggregate = self._extract_qxsupport_aggregate_hours(response.payload)
+            if aggregate > best_aggregate:
+                best_aggregate = aggregate
+
+        return [], best_aggregate
+
+    def _extract_qxsupport_detailed_rows(self, payload: object) -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
+
+        def visit(node: object) -> None:
+            if isinstance(node, dict):
+                lowered = {str(key).lower(): value for key, value in node.items()}
+                project_value = lowered.get("project") or lowered.get("projectname") or lowered.get("project_name")
+                has_qxsupport = isinstance(project_value, str) and "qxsupport" in project_value.lower().replace(" ", "")
+
+                if has_qxsupport:
+                    hours_candidate = (
+                        lowered.get("workingtime")
+                        or lowered.get("working_time")
+                        or lowered.get("hours")
+                        or lowered.get("total")
+                    )
+                    parsed_hours = self._hours_value_from_remote(hours_candidate)
+                    if parsed_hours is not None and parsed_hours > 0:
+                        ticket_value = (
+                            lowered.get("ticket")
+                            or lowered.get("ticketid")
+                            or lowered.get("internal_id")
+                            or lowered.get("ticketcode")
+                            or "QXSUPPORT"
+                        )
+                        ticket_code = "QXSUPPORT"
+                        comment_value = (
+                            lowered.get("reason")
+                            or lowered.get("comment")
+                            or lowered.get("work_log")
+                            or lowered.get("description")
+                            or "Imported from QxSupport"
+                        )
+                        comment_text = str(comment_value).strip() or "Imported from QxSupport"
+                        description_value = lowered.get("description") or lowered.get("ticketdescription") or "QxSupport import"
+                        log_date_value = lowered.get("log_date") or lowered.get("date") or datetime.now().date().isoformat()
+                        api_ticket_uuid = str(lowered.get("uuid") or lowered.get("ticketuuid") or "").strip().upper()
+                        rows.append(
+                            {
+                                "ticket": ticket_code,
+                                "working_time": f"{parsed_hours:g}h",
+                                "comment": comment_text,
+                                "description": str(description_value).strip() or "QxSupport import",
+                                "log_date": str(log_date_value).strip() or datetime.now().date().isoformat(),
+                                "api_ticket_uuid": api_ticket_uuid,
+                            }
+                        )
+
+                for value in node.values():
+                    visit(value)
+            elif isinstance(node, list):
+                for item in node:
+                    visit(item)
+
+        visit(payload)
+
+        unique: list[dict[str, str]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for row in rows:
+            key = (row["ticket"], row["working_time"], row["comment"])
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(row)
+        return unique
+
+    def _extract_qxsupport_aggregate_hours(self, payload: object) -> float:
+        values: list[float] = []
+
+        def visit(node: object) -> None:
+            if isinstance(node, dict):
+                lowered = {str(key).lower(): value for key, value in node.items()}
+
+                direct = lowered.get("qxsupport")
+                parsed_direct = self._hours_value_from_remote(direct)
+                if parsed_direct is not None and parsed_direct > 0:
+                    values.append(parsed_direct)
+
+                project_name = (
+                    lowered.get("project")
+                    or lowered.get("projectname")
+                    or lowered.get("name")
+                    or lowered.get("label")
+                )
+                if isinstance(project_name, str) and "qxsupport" in project_name.lower().replace(" ", ""):
+                    for metric_key in ("total", "hours", "totalproject", "value"):
+                        parsed_metric = self._hours_value_from_remote(lowered.get(metric_key))
+                        if parsed_metric is not None and parsed_metric > 0:
+                            values.append(parsed_metric)
+
+                for value in node.values():
+                    visit(value)
+            elif isinstance(node, list):
+                for item in node:
+                    visit(item)
+
+        visit(payload)
+        if not values:
+            return 0.0
+        return max(values)
+
+    def _hours_value_from_remote(self, raw: object) -> float | None:
+        if isinstance(raw, (int, float)):
+            value = float(raw)
+            return value if value > 0 else None
+
+        if isinstance(raw, str):
+            normalized = raw.strip().lower().replace(",", ".")
+            if not normalized:
+                return None
+
+            parsed = self._parse_working_time(normalized)
+            if parsed is not None:
+                return parsed[1]
+
+            match = re.search(r"\d+(?:\.\d+)?", normalized)
+            if not match:
+                return None
+            value = float(match.group(0))
+            return value if value > 0 else None
+
+        return None
+
+    def _import_signature(self, month_label: str, ticket: str, working_time: str, comment: str) -> str:
+        return "|".join(
+            [
+                month_label.strip().lower(),
+                ticket.strip().upper(),
+                working_time.strip().lower(),
+                comment.strip().lower(),
+            ]
+        )
 
     def _sync_multiple_worklogs(self, indexes: list[int], scope_label: str) -> None:
         if not indexes:
