@@ -1,5 +1,20 @@
 [
   {
+    "working_time": "32h",
+    "month": "August 2026",
+    "work_log": "create new fpga project and check pinout and schematic",
+    "ticket": "QUIX-721",
+    "comment": "create new fpga project and check pinout and schematic",
+    "description": "QXc-89 NPI: Valicy Intel modular board",
+    "entry_type": "work",
+    "off_type": "",
+    "log_date": "2026-08-20",
+    "api_synced": "",
+    "api_synced_at": "",
+    "api_ticket_uuid": "",
+    "api_month_displacement": "0"
+  },
+  {
     "working_time": "4h",
     "month": "August 2026",
     "work_log": "test com port 2",
