@@ -334,6 +334,21 @@ class LoginWindow(tk.Tk):
         )
         add_qxsupport_synced_btn.pack(side="left", padx=(10, 0))
 
+        add_ticket_synced_btn = tk.Button(
+            ticket_actions,
+            text="+ Import existing ticket",
+            font=("Segoe UI", 10),
+            bg="#14161b",
+            fg="#f4f4f6",
+            activebackground="#1d2129",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=4,
+            pady=4,
+            command=lambda: self._open_worklog_window("ticket_synced"),
+        )
+        add_ticket_synced_btn.pack(side="left", padx=(10, 0))
+
         month_switcher = tk.Frame(ticket_actions, bg="#14161b")
         month_switcher.pack(side="left", padx=(18, 0))
 
@@ -514,6 +529,8 @@ class LoginWindow(tk.Tk):
             default_type = "off"
         elif default_entry_type == "qxsupport_synced":
             default_type = "qxsupport_synced"
+        elif default_entry_type == "ticket_synced":
+            default_type = "ticket_synced"
         else:
             default_type = "work"
 
@@ -557,6 +574,18 @@ class LoginWindow(tk.Tk):
             type_row,
             text="QxSupport (already synced)",
             value="qxsupport_synced",
+            variable=entry_type_var,
+            font=("Segoe UI", 10),
+            fg="#f4f4f6",
+            bg="#2b2b30",
+            selectcolor="#2b2b30",
+            activebackground="#2b2b30",
+            activeforeground="#f4f4f6",
+        ).pack(side="left", padx=(10, 0))
+        tk.Radiobutton(
+            type_row,
+            text="Ticket (already synced)",
+            value="ticket_synced",
             variable=entry_type_var,
             font=("Segoe UI", 10),
             fg="#f4f4f6",
@@ -612,6 +641,7 @@ class LoginWindow(tk.Tk):
             selected_type = entry_type_var.get()
             is_off = selected_type == "off"
             is_qxsupport_synced = selected_type == "qxsupport_synced"
+            is_ticket_synced = selected_type == "ticket_synced"
             if is_off:
                 off_type_row.pack(anchor="w", padx=20, pady=(8, 0))
                 ticket_entry.delete(0, "end")
@@ -633,6 +663,13 @@ class LoginWindow(tk.Tk):
                     description_text.insert("1.0", "QxSupport monthly import")
                 if not comment_text.get("1.0", "end").strip():
                     comment_text.insert("1.0", "Imported manually from QxSupport web")
+            elif is_ticket_synced:
+                off_type_row.pack_forget()
+                ticket_entry.configure(state="normal")
+                current_ticket = ticket_entry.get().strip().upper()
+                if current_ticket in {"", "OFF", "QUIX-", "QXSUPPORT"}:
+                    ticket_entry.delete(0, "end")
+                    ticket_entry.insert(0, "SFTC-")
             else:
                 off_type_row.pack_forget()
                 ticket_entry.configure(state="normal")
@@ -703,8 +740,7 @@ class LoginWindow(tk.Tk):
             messagebox.showerror("Error", "Insert a ticket code.")
             return
 
-        if not ticket.startswith("QUIX-"):
-            ticket = f"QUIX-{ticket}"
+        ticket = self._normalize_ticket_code(ticket)
 
         if ticket == "QUIX-":
             messagebox.showerror("Error", "Insert a valid ticket code.")
@@ -774,6 +810,8 @@ class LoginWindow(tk.Tk):
         normalized_type = "off" if str(entry_type).strip().lower() == "off" else "work"
         if str(entry_type).strip().lower() == "qxsupport_synced":
             normalized_type = "qxsupport_synced"
+        elif str(entry_type).strip().lower() == "ticket_synced":
+            normalized_type = "ticket_synced"
         if normalized_type == "off":
             ticket_code = "OFF"
         elif normalized_type == "qxsupport_synced":
@@ -810,7 +848,7 @@ class LoginWindow(tk.Tk):
             ticket_description = description.strip() or self._find_ticket_description(ticket_code)
             normalized_off_type = ""
 
-        force_synced = normalized_type == "qxsupport_synced"
+        force_synced = normalized_type in {"qxsupport_synced", "ticket_synced"}
         synced_at_value = api_synced_at
         if force_synced and not synced_at_value:
             synced_at_value = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -1096,9 +1134,7 @@ class LoginWindow(tk.Tk):
                 tk.Label(row_frame, text=entry["work_log"], font=("Segoe UI", 10), fg="#e7e7ee", bg="#171a20", anchor="w").pack(side="left", fill="x", expand=True)
 
     def _open_ticket_for_row(self, ticket: str) -> None:
-        ticket_code = ticket.strip().upper()
-        if not ticket_code.startswith("QUIX-"):
-            ticket_code = f"QUIX-{ticket_code}"
+        ticket_code = self._normalize_ticket_code(ticket)
         webbrowser.open(f"https://support.quixant.com/ticket/Edit/{ticket_code}")
 
     def _open_monthly_report(self) -> None:
@@ -1473,7 +1509,7 @@ class LoginWindow(tk.Tk):
         ticket_code = ticket.upper().strip()
         if not ticket_code:
             return ""
-        if not ticket_code.startswith("QUIX-"):
+        if "-" not in ticket_code:
             ticket_code = f"QUIX-{ticket_code}"
         return ticket_code
 
@@ -1641,6 +1677,22 @@ class LoginWindow(tk.Tk):
             return raw
         return datetime.now().date().isoformat()
 
+    def _extra_hours_aggregate_row(self, row: dict[str, str]) -> dict[str, str]:
+        month_label = str(row.get("month", "")).strip()
+        off_rows = [
+            candidate
+            for candidate in self.work_logs
+            if self._is_off_entry(candidate) and str(candidate.get("month", "")).strip() == month_label
+        ]
+        if not off_rows:
+            off_rows = [row]
+
+        source_row = max(off_rows, key=self._hours_from_worklog_row)
+        total_hours = sum(self._hours_from_worklog_row(candidate) for candidate in off_rows)
+        aggregated = dict(source_row)
+        aggregated["working_time"] = f"{total_hours:g}h"
+        return aggregated
+
     def _format_decimal_hours(self, hours_value: float) -> float:
         """Return hours as decimal float for /api/extrahours/add payloads."""
         return round(float(hours_value), 2)
@@ -1675,11 +1727,12 @@ class LoginWindow(tk.Tk):
         date_variants = self._extra_hours_date_variants(date_value)
         type_value = self._extra_hours_type_from_row(row)
         task_id = get_clockify_task_id(type_value)
+        user_uuid = self._resolve_clockify_user_uuid(token)
         description_value = str(row.get("comment", "")).strip() or str(row.get("description", "")).strip() or "extra off"
         payload_hours: int | float = int(decimal_hours) if float(decimal_hours).is_integer() else decimal_hours
         # Prefill with the currently requested shape; user can still edit before send.
         return {
-            "uuid": "",
+            "uuid": user_uuid,
             "id_clockify_task": task_id,
             "hours": payload_hours,
             "log_date_start": date_variants["it_date"],
@@ -1819,10 +1872,15 @@ class LoginWindow(tk.Tk):
         row["api_month_displacement"] = month_displacement
 
     def _mark_row_as_extra_hours_synced(self, row: dict[str, str]) -> None:
-        row["api_synced"] = "true"
-        row["api_synced_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
-        row["api_ticket_uuid"] = ""
-        row["api_month_displacement"] = ""
+        month_label = str(row.get("month", "")).strip()
+        synced_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        for candidate in self.work_logs:
+            if not self._is_off_entry(candidate) or str(candidate.get("month", "")).strip() != month_label:
+                continue
+            candidate["api_synced"] = "true"
+            candidate["api_synced_at"] = synced_at
+            candidate["api_ticket_uuid"] = ""
+            candidate["api_month_displacement"] = ""
 
     def _debug_log_extra_hours_payload(self, payload: dict[str, object], attempt_index: int) -> None:
         timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -1903,17 +1961,16 @@ class LoginWindow(tk.Tk):
         return result
 
     def _sync_extra_hours_row(self, token: str, row: dict[str, str]) -> bool:
-        payload = self._build_extra_hours_payload_for_row(row, token)
-
         try:
+            aggregated_row = self._extra_hours_aggregate_row(row)
+            payload = self._build_extra_hours_payload_for_row(aggregated_row, token)
             self.api_client.request_json("POST", "/api/extrahours/add", token, payload)
             self._mark_row_as_extra_hours_synced(row)
             return True
         except Exception as exc:  # noqa: BLE001 - expose payload and server error
-            payload_preview = json.dumps(payload, ensure_ascii=False)
             raise RuntimeError(
                 "Failed to sync extra off entry with /api/extrahours/add: "
-                f"{exc} | Payload: {payload_preview}"
+                f"{exc}"
             ) from exc
 
     def _sync_single_worklog(self, index: int) -> None:
