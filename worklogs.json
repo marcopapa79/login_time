@@ -24,10 +24,10 @@
     "entry_type": "off",
     "off_type": "Annual Leave",
     "log_date": "2026-08-26",
-    "api_synced": "",
-    "api_synced_at": "",
+    "api_synced": "true",
+    "api_synced_at": "2026-08-28T11:41:09+02:00",
     "api_ticket_uuid": "",
-    "api_month_displacement": "0"
+    "api_month_displacement": ""
   },
   {
     "working_time": "32h",
