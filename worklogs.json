@@ -1,5 +1,20 @@
 [
   {
+    "working_time": "1h",
+    "month": "August 2026",
+    "work_log": "Imported manually from QxSupport web",
+    "ticket": "SFTC-14",
+    "comment": "Imported manually from QxSupport web",
+    "description": "QxSupport monthly import",
+    "entry_type": "ticket_synced",
+    "off_type": "",
+    "log_date": "2026-08-28",
+    "api_synced": "true",
+    "api_synced_at": "2026-08-28T11:57:23+02:00",
+    "api_ticket_uuid": "",
+    "api_month_displacement": "0"
+  },
+  {
     "working_time": "4h",
     "month": "August 2026",
     "work_log": "check pinout",
@@ -9,9 +24,9 @@
     "entry_type": "work",
     "off_type": "",
     "log_date": "2026-08-26",
-    "api_synced": "",
-    "api_synced_at": "",
-    "api_ticket_uuid": "",
+    "api_synced": "true",
+    "api_synced_at": "2026-08-28T12:20:34+02:00",
+    "api_ticket_uuid": "E7E7B2A8-AE5F-4ABC-A592-36835B7EBDDD",
     "api_month_displacement": "0"
   },
   {
@@ -25,7 +40,7 @@
     "off_type": "Annual Leave",
     "log_date": "2026-08-26",
     "api_synced": "true",
-    "api_synced_at": "2026-08-28T11:41:09+02:00",
+    "api_synced_at": "2026-08-28T12:19:24+02:00",
     "api_ticket_uuid": "",
     "api_month_displacement": ""
   },
@@ -39,9 +54,9 @@
     "entry_type": "work",
     "off_type": "",
     "log_date": "2026-08-20",
-    "api_synced": "",
-    "api_synced_at": "",
-    "api_ticket_uuid": "",
+    "api_synced": "true",
+    "api_synced_at": "2026-08-28T12:20:34+02:00",
+    "api_ticket_uuid": "E7E7B2A8-AE5F-4ABC-A592-36835B7EBDDD",
     "api_month_displacement": "0"
   },
   {
@@ -70,7 +85,7 @@
     "off_type": "Annual Leave",
     "log_date": "2026-08-19",
     "api_synced": "true",
-    "api_synced_at": "2026-08-19T15:32:14+02:00",
+    "api_synced_at": "2026-08-28T12:19:24+02:00",
     "api_ticket_uuid": "",
     "api_month_displacement": ""
   },

@@ -13,6 +13,7 @@ Simple Python desktop app with a login GUI.
 - API ticket update tester that logs in to Quixant Hub and sends protected requests without opening the web UI
 - Local working time log table
 - Add and remove working time log entries
+- Import an existing support ticket worklog as already synced (for example `SFTC-14` with the working time shown in Quixant Hub)
 - Per-row actions in dashboard log:
 	- Open ticket in browser
 	- Copy working time (local copy window)
