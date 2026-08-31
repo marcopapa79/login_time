@@ -1,5 +1,20 @@
 [
   {
+    "working_time": "18h",
+    "month": "August 2026",
+    "work_log": "Launchpad Universal help simulation and test com port rx and tx for sas timing",
+    "ticket": "QUIX-712",
+    "comment": "Launchpad Universal help simulation and test com port rx and tx for sas timing",
+    "description": "Launchpad - Universal",
+    "entry_type": "work",
+    "off_type": "",
+    "log_date": "2026-08-31",
+    "api_synced": "true",
+    "api_synced_at": "2026-08-31T14:48:09+02:00",
+    "api_ticket_uuid": "897D4D35-DEB5-4B85-A3EC-FE0E6A096104",
+    "api_month_displacement": "0"
+  },
+  {
     "working_time": "1h",
     "month": "August 2026",
     "work_log": "Imported manually from QxSupport web",
