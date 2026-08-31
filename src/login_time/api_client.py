@@ -18,7 +18,7 @@ class ApiResponse:
 
 
 class QuixantHubClient:
-    def __init__(self, base_url: str = DEFAULT_BASE_URL, timeout: int = 20) -> None:
+    def __init__(self, base_url: str = DEFAULT_BASE_URL, timeout: int = 45) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
@@ -75,16 +75,27 @@ class QuixantHubClient:
         candidates = [
             ("/api/tickets/list2", {"closed": False, "archived": False}),
             ("/api/tickets/list2", {"closed": True, "archived": False}),
+            ("/api/tickets/list2", {"closed": True, "archived": True}),
             ("/api/tickets/list", {"closed": False, "archived": False}),
             ("/api/tickets/list", {"closed": True, "archived": False}),
+            ("/api/tickets/list", {"closed": True, "archived": True}),
         ]
 
+        last_error: Exception | None = None
         for path, query in candidates:
-            response = self.request_query(path, token, query)
+            try:
+                response = self.request_query(path, token, query)
+            except Exception as exc:  # noqa: BLE001 - keep trying remaining candidates
+                last_error = exc
+                continue
             resolved = self._find_ticket_uuid(response.payload, normalized_reference)
             if resolved:
                 return resolved
 
+        if last_error is not None:
+            raise RuntimeError(
+                f"Unable to resolve ticket '{ticket_reference}' to a UUID via /api/tickets/list: {last_error}"
+            ) from last_error
         raise RuntimeError(f"Unable to resolve ticket '{ticket_reference}' to a UUID via /api/tickets/list.")
 
     def request_raw(self, method: str, path: str, token: str, body_text: str) -> ApiResponse:
@@ -125,6 +136,17 @@ class QuixantHubClient:
         except error.HTTPError as exc:
             raw_text = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"HTTP {exc.code} calling {path}: {raw_text[:400]}") from exc
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"Timed out after {self.timeout}s waiting for {path}. The endpoint may be returning a large payload; try again."
+            ) from exc
+        except error.URLError as exc:
+            reason = exc.reason
+            if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
+                raise RuntimeError(
+                    f"Timed out after {self.timeout}s waiting for {path}. The endpoint may be returning a large payload; try again."
+                ) from exc
+            raise RuntimeError(f"Network error calling {path}: {reason}") from exc
 
     def _decode_payload(self, raw_text: str) -> Any:
         if not raw_text.strip():
