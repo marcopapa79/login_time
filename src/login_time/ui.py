@@ -1722,6 +1722,17 @@ class LoginWindow(tk.Tk):
             "it_datetime": parsed.strftime("%d/%m/%Y 00:00:00"),
         }
 
+    def _request_extra_hours_guid(self, token: str) -> str:
+        response = self.api_client.request_query("/api/tickets/newguid", token)
+        payload = response.payload
+        if not isinstance(payload, dict):
+            raise RuntimeError("The API did not return a GUID for the extra off entry.")
+
+        guid = str(payload.get("guid", "")).strip()
+        if not self._is_uuid(guid):
+            raise RuntimeError("The API returned an invalid GUID for the extra off entry.")
+        return guid
+
     def _build_extra_hours_payload_for_row(self, row: dict[str, str], token: str) -> dict[str, object]:
         hours_value = self._hours_from_worklog_row(row)
         if hours_value <= 0:
@@ -1732,12 +1743,12 @@ class LoginWindow(tk.Tk):
         date_variants = self._extra_hours_date_variants(date_value)
         type_value = self._extra_hours_type_from_row(row)
         task_id = get_clockify_task_id(type_value)
-        user_uuid = self._resolve_clockify_user_uuid(token)
+        entry_guid = self._request_extra_hours_guid(token)
         description_value = str(row.get("comment", "")).strip() or str(row.get("description", "")).strip() or "extra off"
         payload_hours: int | float = int(decimal_hours) if float(decimal_hours).is_integer() else decimal_hours
         # Prefill with the currently requested shape; user can still edit before send.
         return {
-            "uuid": user_uuid,
+            "uuid": entry_guid,
             "id_clockify_task": task_id,
             "hours": payload_hours,
             "log_date_start": date_variants["it_date"],
@@ -1877,15 +1888,10 @@ class LoginWindow(tk.Tk):
         row["api_month_displacement"] = month_displacement
 
     def _mark_row_as_extra_hours_synced(self, row: dict[str, str]) -> None:
-        month_label = str(row.get("month", "")).strip()
-        synced_at = datetime.now().astimezone().isoformat(timespec="seconds")
-        for candidate in self.work_logs:
-            if not self._is_off_entry(candidate) or str(candidate.get("month", "")).strip() != month_label:
-                continue
-            candidate["api_synced"] = "true"
-            candidate["api_synced_at"] = synced_at
-            candidate["api_ticket_uuid"] = ""
-            candidate["api_month_displacement"] = ""
+        row["api_synced"] = "true"
+        row["api_synced_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        row["api_ticket_uuid"] = ""
+        row["api_month_displacement"] = ""
 
     def _debug_log_extra_hours_payload(self, payload: dict[str, object], attempt_index: int) -> None:
         timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -1967,8 +1973,7 @@ class LoginWindow(tk.Tk):
 
     def _sync_extra_hours_row(self, token: str, row: dict[str, str]) -> bool:
         try:
-            aggregated_row = self._extra_hours_aggregate_row(row)
-            payload = self._build_extra_hours_payload_for_row(aggregated_row, token)
+            payload = self._build_extra_hours_payload_for_row(row, token)
             self.api_client.request_json("POST", "/api/extrahours/add", token, payload)
             self._mark_row_as_extra_hours_synced(row)
             return True
@@ -1976,9 +1981,10 @@ class LoginWindow(tk.Tk):
             if self._is_api_lock_error(exc):
                 self._mark_row_as_extra_hours_synced(row)
                 return True
+            payload_preview = json.dumps(payload, ensure_ascii=False) if "payload" in locals() else "{}"
             raise RuntimeError(
                 "Failed to sync extra off entry with /api/extrahours/add: "
-                f"{exc}"
+                f"{exc} | Payload: {payload_preview}"
             ) from exc
 
     def _sync_single_worklog(self, index: int) -> None:
