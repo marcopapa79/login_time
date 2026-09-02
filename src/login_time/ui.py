@@ -1659,6 +1659,11 @@ class LoginWindow(tk.Tk):
     def _is_off_entry(self, row: dict[str, str]) -> bool:
         return str(row.get("entry_type", "work")).strip().lower() == "off"
 
+    @staticmethod
+    def _is_api_lock_error(exc: Exception | str) -> bool:
+        text = str(exc).lower()
+        return "this entry is locked" in text or "entry is locked" in text or "message':'this entry is locked'" in text
+
     def _is_api_syncable(self, row: dict[str, str]) -> bool:
         return True
 
@@ -1968,6 +1973,9 @@ class LoginWindow(tk.Tk):
             self._mark_row_as_extra_hours_synced(row)
             return True
         except Exception as exc:  # noqa: BLE001 - expose payload and server error
+            if self._is_api_lock_error(exc):
+                self._mark_row_as_extra_hours_synced(row)
+                return True
             raise RuntimeError(
                 "Failed to sync extra off entry with /api/extrahours/add: "
                 f"{exc}"

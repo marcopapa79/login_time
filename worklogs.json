@@ -1,5 +1,35 @@
 [
   {
+    "working_time": "4h",
+    "month": "September 2026",
+    "work_log": "15th anniversary",
+    "ticket": "OFF",
+    "comment": "15th anniversary",
+    "description": "annual leave",
+    "entry_type": "off",
+    "off_type": "Annual Leave",
+    "log_date": "2026-09-02",
+    "api_synced": "",
+    "api_synced_at": "",
+    "api_ticket_uuid": "",
+    "api_month_displacement": ""
+  },
+  {
+    "working_time": "8h",
+    "month": "September 2026",
+    "work_log": "work on fpga side spi2",
+    "ticket": "QUIX-721",
+    "comment": "work on fpga side spi2",
+    "description": "QXc-89 NPI: Valicy Intel modular board",
+    "entry_type": "work",
+    "off_type": "",
+    "log_date": "2026-09-01",
+    "api_synced": "true",
+    "api_synced_at": "2026-09-02T09:43:00+02:00",
+    "api_ticket_uuid": "E7E7B2A8-AE5F-4ABC-A592-36835B7EBDDD",
+    "api_month_displacement": "0"
+  },
+  {
     "working_time": "18h",
     "month": "August 2026",
     "work_log": "Launchpad Universal help simulation and test com port rx and tx for sas timing",
