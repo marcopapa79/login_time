@@ -8,9 +8,9 @@
     "description": "annual leave",
     "entry_type": "off",
     "off_type": "Annual Leave",
-    "log_date": "2026-09-02",
-    "api_synced": "",
-    "api_synced_at": "",
+    "log_date": "2026-09-01",
+    "api_synced": "true",
+    "api_synced_at": "2026-09-02T12:41:23+02:00",
     "api_ticket_uuid": "",
     "api_month_displacement": ""
   },
