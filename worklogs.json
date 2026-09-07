@@ -1,5 +1,35 @@
 [
   {
+    "working_time": "8h",
+    "month": "September 2026",
+    "work_log": "check pinout schematic low cost board",
+    "ticket": "QUIX-711",
+    "comment": "check pinout schematic low cost board",
+    "description": "Industrial FPGA: Second Source Validation",
+    "entry_type": "work",
+    "off_type": "",
+    "log_date": "2026-09-07",
+    "api_synced": "true",
+    "api_synced_at": "2026-09-07T15:03:49+02:00",
+    "api_ticket_uuid": "55C16149-BAE8-40CF-AC24-65260F3D590D",
+    "api_month_displacement": "0"
+  },
+  {
+    "working_time": "8h",
+    "month": "September 2026",
+    "work_log": "check schematic",
+    "ticket": "QUIX-721",
+    "comment": "check schematic",
+    "description": "QXc-89 NPI: Valicy Intel modular board",
+    "entry_type": "work",
+    "off_type": "",
+    "log_date": "2026-09-07",
+    "api_synced": "true",
+    "api_synced_at": "2026-09-07T15:03:49+02:00",
+    "api_ticket_uuid": "E7E7B2A8-AE5F-4ABC-A592-36835B7EBDDD",
+    "api_month_displacement": "0"
+  },
+  {
     "working_time": "4h",
     "month": "September 2026",
     "work_log": "15th anniversary",

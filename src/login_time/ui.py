@@ -349,8 +349,8 @@ class LoginWindow(tk.Tk):
         )
         add_ticket_synced_btn.pack(side="left", padx=(10, 0))
 
-        month_switcher = tk.Frame(ticket_actions, bg="#14161b")
-        month_switcher.pack(side="left", padx=(18, 0))
+        month_switcher = tk.Frame(ticket_panel, bg="#14161b")
+        month_switcher.pack(fill="x", padx=10, pady=(0, 8))
 
         tk.Button(
             month_switcher,
@@ -380,13 +380,27 @@ class LoginWindow(tk.Tk):
             command=lambda: self._set_dashboard_month(-1),
         ).pack(side="left", padx=(8, 0))
 
+        tk.Button(
+            month_switcher,
+            text="Two Months Ago",
+            font=("Segoe UI", 10, "bold"),
+            bg="#3a3a40",
+            fg="#f4f4f6",
+            activebackground="#4a4a50",
+            activeforeground="#ffffff",
+            relief="flat",
+            padx=12,
+            pady=6,
+            command=lambda: self._set_dashboard_month(-2),
+        ).pack(side="left", padx=(8, 0))
+
         tk.Label(
-            ticket_actions,
+            month_switcher,
             textvariable=self.month_view_var,
             font=("Segoe UI", 10, "bold"),
             fg="#bcbcc7",
             bg="#14161b",
-        ).pack(side="right")
+        ).pack(side="left", padx=(18, 0))
 
         line = tk.Frame(ticket_panel, bg="#ff6a00", height=1)
         line.pack(fill="x", padx=10, pady=(6, 10))
@@ -538,7 +552,23 @@ class LoginWindow(tk.Tk):
         off_type_var = tk.StringVar(value="Annual Leave")
 
         tk.Label(window, text="Ticket", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(16, 6))
-        ticket_entry = tk.Entry(window, width=40, font=("Segoe UI", 11))
+        ticket_titles: dict[str, str] = {}
+        for row in self.work_logs:
+            ticket_code = self._normalize_ticket_code(str(row.get("ticket", "")).strip()).upper()
+            if ticket_code in {"", "QUIX-", "OFF", "QXSUPPORT"}:
+                continue
+            title = str(row.get("description", "")).strip()
+            if ticket_code not in ticket_titles or (title and not ticket_titles[ticket_code]):
+                ticket_titles[ticket_code] = title
+
+        ticket_choices = [
+            f"{ticket_code} | {ticket_titles[ticket_code] or '(no title)'}"
+            for ticket_code in sorted(ticket_titles)
+        ]
+        ticket_choice_codes = {
+            choice: choice.split(" | ", 1)[0] for choice in ticket_choices
+        }
+        ticket_entry = ttk.Combobox(window, width=48, font=("Segoe UI", 11), values=ticket_choices)
         ticket_entry.pack(anchor="w", padx=20)
         ticket_entry.insert(0, "QUIX-")
 
@@ -631,6 +661,20 @@ class LoginWindow(tk.Tk):
 
             description_text.insert("1.0", existing_description)
 
+        def select_previous_ticket(*_: object) -> None:
+            selected_choice = ticket_entry.get().strip()
+            ticket_code = ticket_choice_codes.get(selected_choice)
+            if not ticket_code:
+                return
+
+            ticket_entry.delete(0, "end")
+            ticket_entry.insert(0, ticket_code)
+            existing_description = self._find_ticket_description(ticket_code)
+            if existing_description:
+                description_text.delete("1.0", "end")
+                description_text.insert("1.0", existing_description)
+
+        ticket_entry.bind("<<ComboboxSelected>>", select_previous_ticket)
         ticket_entry.bind("<FocusOut>", prefill_description)
 
         tk.Label(window, text="Comment", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(12, 6))
@@ -1589,7 +1633,8 @@ class LoginWindow(tk.Tk):
         target_total = self._expected_month_hours(target_month)
         missing_total = max(target_total - local_total, 0.0)
         verification = "OK" if abs(local_total - target_total) < 1e-9 else "CHECK"
-        view_name = "Current Month" if self.selected_month_offset == 0 else "Previous Month"
+        view_names = {0: "Current Month", -1: "Previous Month", -2: "Two Months Ago"}
+        view_name = view_names.get(self.selected_month_offset, f"{self.selected_month_offset} Months Ago")
         self.month_view_var.set(f"View: {view_name} ({target_month})")
         self.summary_var.set(
             f"{target_month}  Total: {target_total:g}h ({verification})  Local: {local_total:g}h  Extra Off: {off_total:g}h  API synced: {synced_total:g}h  Pending: {pending_total:g}h  Missing: {missing_total:g}h"
