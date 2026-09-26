@@ -1,5 +1,35 @@
 [
   {
+    "working_time": "3h",
+    "month": "September 2026",
+    "work_log": "update fgpa ver 0107",
+    "ticket": "UNIV-152",
+    "comment": "update fgpa ver 0107",
+    "description": "Freezes during QSP Init and the FPGA version will be",
+    "entry_type": "ticket_synced",
+    "off_type": "",
+    "log_date": "2026-09-26",
+    "api_synced": "true",
+    "api_synced_at": "2026-09-26T09:09:22+02:00",
+    "api_ticket_uuid": "",
+    "api_month_displacement": "0"
+  },
+  {
+    "working_time": "4h",
+    "month": "September 2026",
+    "work_log": "rol",
+    "ticket": "OFF",
+    "comment": "rol",
+    "description": "annual leave",
+    "entry_type": "off",
+    "off_type": "Annual Leave",
+    "log_date": "2026-09-26",
+    "api_synced": "true",
+    "api_synced_at": "2026-09-26T09:04:38+02:00",
+    "api_ticket_uuid": "",
+    "api_month_displacement": ""
+  },
+  {
     "working_time": "12h",
     "month": "September 2026",
     "work_log": "test dual boot and debug new riscV",
