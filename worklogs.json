@@ -1,5 +1,35 @@
 [
   {
+    "working_time": "8h",
+    "month": "October 2026",
+    "work_log": "design check",
+    "ticket": "QUIX-727",
+    "comment": "design check",
+    "description": "QXi-87 x QB-081: Brazil Mini ITX + Expansion Board NPI",
+    "entry_type": "work",
+    "off_type": "",
+    "log_date": "2026-10-02",
+    "api_synced": "true",
+    "api_synced_at": "2026-10-02T11:54:04+02:00",
+    "api_ticket_uuid": "5563C35A-ED6E-4839-A7E0-F43BD605B23E",
+    "api_month_displacement": "0"
+  },
+  {
+    "working_time": "2h",
+    "month": "October 2026",
+    "work_log": "customer support",
+    "ticket": "UNIV-152",
+    "comment": "customer support",
+    "description": "Freezes during QSP Init and the FPGA version will be",
+    "entry_type": "ticket_synced",
+    "off_type": "",
+    "log_date": "2026-10-02",
+    "api_synced": "true",
+    "api_synced_at": "2026-10-02T11:52:00+02:00",
+    "api_ticket_uuid": "",
+    "api_month_displacement": "0"
+  },
+  {
     "working_time": "16h",
     "month": "September 2026",
     "work_log": "FW change for rev B",
