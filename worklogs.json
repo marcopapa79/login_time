@@ -1,5 +1,35 @@
 [
   {
+    "working_time": "16h",
+    "month": "October 2026",
+    "work_log": "test on Qmax3 win and lin",
+    "ticket": "SFTC-14",
+    "comment": "test on Qmax3 win and lin",
+    "description": "having unique custom keys pre-programmed into your systems at the factory",
+    "entry_type": "ticket_synced",
+    "off_type": "",
+    "log_date": "2026-10-06",
+    "api_synced": "true",
+    "api_synced_at": "2026-10-06T11:06:09+02:00",
+    "api_ticket_uuid": "",
+    "api_month_displacement": "0"
+  },
+  {
+    "working_time": "2h",
+    "month": "October 2026",
+    "work_log": "permesso",
+    "ticket": "OFF",
+    "comment": "permesso",
+    "description": "annual leave",
+    "entry_type": "off",
+    "off_type": "Annual Leave",
+    "log_date": "2026-10-06",
+    "api_synced": "true",
+    "api_synced_at": "2026-10-06T10:43:46+02:00",
+    "api_ticket_uuid": "",
+    "api_month_displacement": ""
+  },
+  {
     "working_time": "8h",
     "month": "October 2026",
     "work_log": "design check",
