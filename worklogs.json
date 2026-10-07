@@ -1,5 +1,20 @@
 [
   {
+    "working_time": "8h",
+    "month": "October 2026",
+    "work_log": "Konno san",
+    "ticket": "UNIV-152",
+    "comment": "Konno san",
+    "description": "Freezes during QSP Init and the FPGA version will be",
+    "entry_type": "ticket_synced",
+    "off_type": "",
+    "log_date": "2026-10-07",
+    "api_synced": "true",
+    "api_synced_at": "2026-10-07T10:43:05+02:00",
+    "api_ticket_uuid": "",
+    "api_month_displacement": "0"
+  },
+  {
     "working_time": "16h",
     "month": "October 2026",
     "work_log": "test on Qmax3 win and lin",
