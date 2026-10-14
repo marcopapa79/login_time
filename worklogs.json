@@ -1,5 +1,35 @@
 [
   {
+    "working_time": "4h",
+    "month": "October 2026",
+    "work_log": "fpga provided",
+    "ticket": "SFTC-14",
+    "comment": "fpga provided",
+    "description": "having unique custom keys pre-programmed into your systems at the factory",
+    "entry_type": "ticket_synced",
+    "off_type": "",
+    "log_date": "2026-10-14",
+    "api_synced": "true",
+    "api_synced_at": "2026-10-14T13:13:39+02:00",
+    "api_ticket_uuid": "",
+    "api_month_displacement": "0"
+  },
+  {
+    "working_time": "16h",
+    "month": "October 2026",
+    "work_log": "start checking schematic of QB-081",
+    "ticket": "QUIX-727",
+    "comment": "start checking schematic of QB-081",
+    "description": "QXi-87 x QB-081: Brazil Mini ITX + Expansion Board NPI",
+    "entry_type": "work",
+    "off_type": "",
+    "log_date": "2026-10-14",
+    "api_synced": "true",
+    "api_synced_at": "2026-10-14T12:50:12+02:00",
+    "api_ticket_uuid": "5563C35A-ED6E-4839-A7E0-F43BD605B23E",
+    "api_month_displacement": "0"
+  },
+  {
     "working_time": "8h",
     "month": "October 2026",
     "work_log": "Konno san",
