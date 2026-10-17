@@ -19,14 +19,18 @@ from .config import (
     save_work_logs,
 )
 
+# Velocità di scorrimento della lista worklog
+SCROLL_PIXEL_PER_UNITA = 20  # pixel per unità di scroll
+SCROLL_UNITA_PER_SCATTO = 3  # unità per ogni scatto della rotellina (3 x 20 = 60 px)
+
 
 class LoginWindow(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Login Time")
         self.geometry("1366x768")
+        self.after(50, self._maximize_window)
         self.configure(bg="#1f1f22")
-        self.resizable(False, False)
 
         self.work_logs: list[dict[str, str]] = load_work_logs()
         self.worklog_rows: tk.Frame | None = None
@@ -43,6 +47,15 @@ class LoginWindow(tk.Tk):
         self.selected_month_offset = 0
         self._bootstrap_ticket_uuid_cache()
         self._build_login_ui()
+
+    def _maximize_window(self) -> None:
+        try:
+            self.state("zoomed")
+        except tk.TclError:
+            try:
+                self.attributes("-zoomed", True)
+            except tk.TclError:
+                pass
 
     def _clear_window(self) -> None:
         for child in self.winfo_children():
@@ -408,7 +421,12 @@ class LoginWindow(tk.Tk):
         scroll_host = tk.Frame(ticket_panel, bg="#14161b")
         scroll_host.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
-        self.worklog_canvas = tk.Canvas(scroll_host, bg="#14161b", highlightthickness=0)
+        self.worklog_canvas = tk.Canvas(
+            scroll_host,
+            bg="#14161b",
+            highlightthickness=0,
+            yscrollincrement=SCROLL_PIXEL_PER_UNITA,
+        )
         self.worklog_canvas.pack(side="left", fill="both", expand=True)
 
         scrollbar = tk.Scrollbar(scroll_host, orient="vertical", command=self.worklog_canvas.yview)
@@ -426,7 +444,23 @@ class LoginWindow(tk.Tk):
             "<Configure>",
             lambda event: self.worklog_canvas.itemconfig(self.worklog_canvas_window, width=event.width),
         )
+        self.bind_all("<MouseWheel>", self._scroll_rotellina)
         self._render_worklogs()
+
+    def _scroll_rotellina(self, event: tk.Event) -> None:
+        try:
+            canvas = self.worklog_canvas
+            if canvas is None or not canvas.winfo_exists():
+                return
+            # Ignora la rotellina nelle finestre secondarie (Toplevel)
+            if event.widget.winfo_toplevel() is not self:
+                return
+            # Su Windows ogni "scatto" della rotellina vale delta = 120
+            passi = -event.delta / 120 * SCROLL_UNITA_PER_SCATTO
+            passi = int(passi) if abs(passi) >= 1 else (1 if passi > 0 else -1)
+            canvas.yview_scroll(passi, "units")
+        except (tk.TclError, AttributeError):
+            pass
 
     def _show_profile_menu(self, anchor: tk.Widget) -> None:
         menu = tk.Menu(self, tearoff=0, bg="#2b2b30", fg="#f4f4f6", activebackground="#3a3a40")
