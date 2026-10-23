@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 credentials.json
+local_settings.json
 worklogs.json
 ticket_uuid_cache.json
 .venv/

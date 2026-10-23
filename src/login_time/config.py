@@ -13,9 +13,26 @@ DEFAULT_USERNAME = "marco.papa@quixant.com"
 DEFAULT_PASSWORD = ""
 
 _PROJECT_DIR = Path(__file__).resolve().parents[2]
-# Point LOGIN_TIME_DATA_DIR at a synced folder (e.g. OneDrive) to share worklogs between PCs.
-_DATA_DIR_ENV = os.environ.get("LOGIN_TIME_DATA_DIR", "").strip()
-_DATA_DIR = Path(os.path.expandvars(_DATA_DIR_ENV)).expanduser() if _DATA_DIR_ENV else _PROJECT_DIR
+_LOCAL_SETTINGS_FILE = _PROJECT_DIR / "local_settings.json"
+
+
+def _resolve_data_dir() -> Path:
+    """Data folder: LOGIN_TIME_DATA_DIR env var, else local_settings.json "data_dir", else project folder."""
+    value = os.environ.get("LOGIN_TIME_DATA_DIR", "").strip()
+    if not value and _LOCAL_SETTINGS_FILE.exists():
+        try:
+            raw = json.loads(_LOCAL_SETTINGS_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            raw = {}
+        if isinstance(raw, dict):
+            value = str(raw.get("data_dir") or "").strip()
+    if not value:
+        return _PROJECT_DIR
+    path = Path(os.path.expandvars(value)).expanduser()
+    return path if path.is_absolute() else _PROJECT_DIR / path
+
+
+_DATA_DIR = _resolve_data_dir()
 
 _CREDENTIALS_FILE = _PROJECT_DIR / "credentials.json"
 _WORKLOG_FILE = _DATA_DIR / "worklogs.json"

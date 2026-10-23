@@ -42,26 +42,23 @@ or double-click `login_time.bat`.
 `worklogs.json`, `ticket_uuid_cache.json` and `credentials.json` are git-ignored:
 Git does not sync them.
 
-### Sharing worklogs between PCs (OneDrive)
-Set `LOGIN_TIME_DATA_DIR` to a synced folder: `worklogs.json` and
-`ticket_uuid_cache.json` are then read/written there. `credentials.json` always stays
-in the project folder. Without the variable the project folder is used.
+### Choosing the data folder (per PC)
+Each PC chooses where `worklogs.json` and `ticket_uuid_cache.json` live with a
+git-ignored `local_settings.json` in the project root (see `local_settings.example.json`):
 
-One-time setup on the PC with the most recent data (app closed):
-
-```powershell
-$dir = "$env:OneDrive\login_time_data"
-New-Item -ItemType Directory -Force $dir | Out-Null
-Copy-Item C:\My_Designs\login_time\worklogs.json, C:\My_Designs\login_time\ticket_uuid_cache.json $dir
-[Environment]::SetEnvironmentVariable("LOGIN_TIME_DATA_DIR", $dir, "User")
+```json
+{ "data_dir": "G:\\Il mio Drive\\login_time_data" }
 ```
 
-On every other PC: wait for OneDrive to download the folder, then run only the
-`SetEnvironmentVariable` line (with that PC's `$dir`). Restart the terminal / Explorer
-before launching the app so the variable is picked up.
+- Any folder works: local (`C:\\Data\\login_time`), OneDrive (`%OneDriveCommercial%\\login_time_data`),
+  Google Drive, Dropbox, network share. `%VAR%` and relative paths (to the project root) are allowed.
+- Without the file (or with an empty `data_dir`) the project folder is used.
+- The `LOGIN_TIME_DATA_DIR` environment variable, if set, overrides the file.
+- `credentials.json` always stays in the project folder.
 
-Do not keep the app open on two PCs at the same time: OneDrive would create a
-conflict copy of `worklogs.json` instead of merging.
+To share data between PCs, point each PC's `data_dir` at the same synced folder and copy
+the most recent JSON files there once (app closed). Do not keep the app open on two PCs
+at the same time: the sync client would create a conflict copy instead of merging.
 
 Commit `7c22c14` stopped tracking the two JSON files, so pulling it on a clone
 that still had them deletes them from disk. Restore them with:
