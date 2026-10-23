@@ -42,6 +42,9 @@ or double-click `login_time.bat`.
 `worklogs.json`, `ticket_uuid_cache.json` and `credentials.json` are git-ignored:
 Git does not sync them.
 
+For step-by-step instructions to create or update `local_settings.json` and
+choose a data folder, see [docs/CONFIGURAZIONE_DATI.md](docs/CONFIGURAZIONE_DATI.md).
+
 ### Choosing the data folder (per PC)
 Each PC chooses where `worklogs.json` and `ticket_uuid_cache.json` live with a
 git-ignored `local_settings.json` in the project root (see `local_settings.example.json`):
