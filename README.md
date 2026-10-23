@@ -1,35 +1,45 @@
 # login_time
 
-Simple Python desktop app with a login GUI.
+Desktop app (Python + Tkinter, Windows) to log working time on Quixant support tickets
+locally and sync it to Quixant Hub (`https://support.quixant.com`) through its API.
 
 ## Features
-- Default username: `marco.papa@quixant.com`
-- Default password: `***REMOVED***`
-- Editable fields in the login form
-- Save button to update default credentials for next runs
-- Success message: `Login done`
-- Dashboard welcome message: `Welcome Marco`
-- Ticket opener in browser
-- API ticket update tester that logs in to Quixant Hub and sends protected requests without opening the web UI
-- Local working time log table
-- Add and remove working time log entries
-- Import an existing support ticket worklog as already synced (for example `SFTC-14` with the working time shown in Quixant Hub)
-- Per-row actions in dashboard log:
-	- Open ticket in browser
-	- Copy working time (local copy window)
-	- Copy work log (local copy window)
-- Monthly Report button (opens Quixant admin monthly report page)
-- Scrollable ticket dashboard for large ticket lists
+- Dashboard per month: target hours (Italian working days × 8h), logged work, Extra Off,
+  synced / pending / missing hours, OK/CHECK status
+- Month picker (any past month) with a marker on months that still have pending rows
+- Ticket cards grouped by ticket, collapsible, with filters (all / pending / synced / Extra Off) and search
+- One "New entry" dialog for work, Extra Off (date range → one row per working day),
+  QxSupport and tickets already on the portal
+- Background API sync (per row, per ticket, per month) with progress and cancel
+- Warning before re-sending a row that was edited after being synced (the portal would get a duplicate)
+- Import of QxSupport hours for the selected month
+- Advanced: API tester for the portal endpoints (profile menu)
 
 ## Run
-From project root:
+From the project root:
 
 ```powershell
 python main.py
 ```
 
-## Notes
-- Uses Tkinter (included in standard Python on Windows).
-- Saved defaults are stored in `credentials.json`.
-- Local working logs are stored in `worklogs.json`.
-- The API tester uses `https://support.quixant.com` and the Bearer token returned by `/api/login`.
+or double-click `login_time.bat`.
+
+## Credentials
+- Nothing is hard-coded. On first login type your portal email and password;
+  with "Ricorda le credenziali" checked the password is stored in
+  **Windows Credential Manager** (entry `login_time/support.quixant.com`) and
+  `credentials.json` keeps only the email.
+- On systems without Credential Manager the password falls back to `credentials.json`
+  (git-ignored).
+
+## Files
+- `worklogs.json` – local worklog rows
+- `ticket_uuid_cache.json` – ticket code → portal UUID cache
+- `docs/DESIGN_BRIEF.md` – UI brief and rationale of the technical choices
+- `docs/extra-off-api.md` – verified Extra Off API flow
+
+## Tests
+
+```powershell
+python -m unittest discover -s tests
+```

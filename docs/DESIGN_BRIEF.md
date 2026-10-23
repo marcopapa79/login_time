@@ -207,9 +207,14 @@ Giorni lun–ven esclusi i festivi italiani (Pasqua calcolata con l'algoritmo gr
 
 ## 8. Limiti e rischi da conoscere
 
-- **Credenziali in chiaro** in `credentials.json` e default hardcoded in [config.py](../src/login_time/config.py#L7) (e nel README). Da spostare in Windows Credential Manager (`keyring`) ed eliminare dal repository.
-- **Re-sync dopo edit può duplicare** le ore sul portale: l'app non cancella la voce remota precedente.
-- `_group_worklogs_by_ticket` mostra solo le **prime 20 righe** del mese ([ui.py](../src/login_time/ui.py#L2437)); i totali invece le contano tutte.
-- Il template "Add extra off" nel tester API usa ancora i nomi campo vecchi (`Type`, `IdClockifyTask`, `Hours`, `Description`), mentre il sync dalla dashboard usa quelli verificati (`id_clockify_task`, `hours`, `description`).
-- Tutte le chiamate API sono **sincrone sul thread UI**: durante un sync la finestra si blocca (fino a 45s per richiesta).
-- `ui.py` è un unico file da ~2600 righe che mescola UI, logica di business e chiamate API: un redesign è l'occasione per separare almeno *logica worklog/sync* da *widget*.
+Stato al 23/10/2026 (redesign + correzioni tecniche):
+
+| Punto | Stato |
+|-------|-------|
+| Credenziali in chiaro / default hardcoded | **Risolto.** Password nel Gestore credenziali di Windows ([credentials_store.py](../src/login_time/credentials_store.py), ctypes, nessuna dipendenza); `credentials.json` contiene solo l'email; nessun default nel codice. Cronologia git ripulita. |
+| Re-sync dopo edit può duplicare | **Mitigato.** Modificando una riga già inviata si sceglie "solo in locale" o "rimanda"; le righe rimandate hanno `api_resend_of` e prima dell'invio l'app chiede conferma. Il portale resta senza API di aggiornamento: la voce vecchia va cancellata dal web. |
+| Limite 20 righe | **Risolto.** Tutte le righe del mese sono visibili; indici per identità (righe identiche non si confondono più). |
+| Template Extra Off nel tester API | **Risolto.** Campi verificati (`id_clockify_task`, `hours`, `description`) e GUID richiesto in automatico. |
+| Chiamate API sincrone sul thread UI | **Risolto per sync e import QxSupport** ([jobs.py](../src/login_time/jobs.py)): thread in background, avanzamento, Annulla dopo la riga in corso. Il tester API (Advanced) resta sincrono. |
+| `ui.py` monolitico | **Parziale.** Stile e componenti in [theme.py](../src/login_time/theme.py) e [widgets.py](../src/login_time/widgets.py); la logica worklog/sync è ancora in `ui.py`. |
+| Ore attese | Invariato: non considera patrono locale né part-time. |

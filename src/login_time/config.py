@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 from pathlib import Path
 from typing import Dict
 
+from . import credentials_store
+
 DEFAULT_USERNAME = "marco.papa@quixant.com"
-DEFAULT_PASSWORD = "***REMOVED***"
+# No default password: it is typed at first login and stored in Windows Credential Manager.
+DEFAULT_PASSWORD = ""
 
 _CREDENTIALS_FILE = Path(__file__).resolve().parents[2] / "credentials.json"
 _WORKLOG_FILE = Path(__file__).resolve().parents[2] / "worklogs.json"
 _TICKET_UUID_CACHE_FILE = Path(__file__).resolve().parents[2] / "ticket_uuid_cache.json"
+_WRITE_LOCK = threading.Lock()
 
 # Clockify task name -> id mapping used by extra-hours API flows.
 CLOCKIFY_TASKS: Dict[str, str] = {
@@ -41,25 +47,58 @@ _CLOCKIFY_TASK_ALIASES: Dict[str, str] = {
 }
 
 
-def load_credentials() -> Dict[str, str]:
-    """Load credentials from file, falling back to safe defaults."""
+def _read_credentials_file() -> tuple[str, str]:
     if not _CREDENTIALS_FILE.exists():
-        return {"username": DEFAULT_USERNAME, "password": DEFAULT_PASSWORD}
-
+        return "", ""
     try:
         raw = json.loads(_CREDENTIALS_FILE.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return {"username": DEFAULT_USERNAME, "password": DEFAULT_PASSWORD}
+        return "", ""
+    if not isinstance(raw, dict):
+        return "", ""
+    return str(raw.get("username") or ""), str(raw.get("password") or "")
 
-    username = raw.get("username") or DEFAULT_USERNAME
-    password = raw.get("password") or DEFAULT_PASSWORD
-    return {"username": str(username), "password": str(password)}
+
+def _write_credentials_file(username: str, password: str | None) -> None:
+    payload: Dict[str, str] = {"username": username}
+    if password is not None:
+        payload["password"] = password
+    _CREDENTIALS_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def credentials_storage_label() -> str:
+    """Human readable place where the password is kept."""
+    return "Gestore credenziali di Windows" if credentials_store.is_supported() else "credentials.json"
+
+
+def load_credentials() -> Dict[str, str]:
+    """Load username/password.
+
+    On Windows the password lives in Credential Manager. A plain-text password still
+    found in credentials.json is moved there once and removed from the file.
+    """
+    file_username, file_password = _read_credentials_file()
+    username = file_username or DEFAULT_USERNAME
+
+    if credentials_store.is_supported():
+        if file_password:
+            if credentials_store.write_credential(username, file_password):
+                _write_credentials_file(username, None)
+            return {"username": username, "password": file_password}
+        stored = credentials_store.read_credential()
+        if stored is not None and stored[1]:
+            return {"username": file_username or stored[0] or username, "password": stored[1]}
+        return {"username": username, "password": DEFAULT_PASSWORD}
+
+    return {"username": username, "password": file_password or DEFAULT_PASSWORD}
 
 
 def save_credentials(username: str, password: str) -> None:
-    """Persist credentials for next app openings."""
-    payload = {"username": username, "password": password}
-    _CREDENTIALS_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    """Persist credentials for next app openings (password in Credential Manager when available)."""
+    if credentials_store.is_supported() and credentials_store.write_credential(username, password):
+        _write_credentials_file(username, None)
+        return
+    _write_credentials_file(username, password)
 
 
 def load_work_logs() -> list[dict[str, str]]:
@@ -94,14 +133,25 @@ def load_work_logs() -> list[dict[str, str]]:
                 "api_synced_at": str(item.get("api_synced_at", "")),
                 "api_ticket_uuid": str(item.get("api_ticket_uuid", "")),
                 "api_month_displacement": str(item.get("api_month_displacement", "")),
+                # Set when a row already on the portal was edited and queued again:
+                # holds the previous sync timestamp so the app can warn about duplicates.
+                "api_resend_of": str(item.get("api_resend_of", "")),
             }
         )
     return entries
 
 
+def _atomic_write(path: Path, text: str) -> None:
+    """Write via a temp file + rename, so a crash mid-write never truncates the file."""
+    with _WRITE_LOCK:  # the sync worker thread may save the UUID cache
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(text, encoding="utf-8")
+        os.replace(tmp_path, path)
+
+
 def save_work_logs(entries: list[dict[str, str]]) -> None:
     """Persist worklog entries for future app sessions."""
-    _WORKLOG_FILE.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+    _atomic_write(_WORKLOG_FILE, json.dumps(entries, indent=2))
 
 
 def load_ticket_uuid_cache() -> Dict[str, str]:
@@ -138,7 +188,7 @@ def save_ticket_uuid_cache(cache: Dict[str, str]) -> None:
         if key and value:
             normalized[key] = value
 
-    _TICKET_UUID_CACHE_FILE.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
+    _atomic_write(_TICKET_UUID_CACHE_FILE, json.dumps(normalized, indent=2))
 
 
 def get_clockify_tasks() -> Dict[str, str]:

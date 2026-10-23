@@ -4,12 +4,16 @@ import json
 import calendar
 from datetime import date, datetime, timedelta
 import re
+import threading
 import tkinter as tk
 import webbrowser
 from tkinter import messagebox, ttk
+from typing import Callable
 
 from .api_client import QuixantHubClient
 from .config import (
+    credentials_storage_label,
+    get_clockify_tasks,
     get_clockify_task_id,
     load_credentials,
     load_ticket_uuid_cache,
@@ -18,10 +22,61 @@ from .config import (
     save_ticket_uuid_cache,
     save_work_logs,
 )
+from .jobs import JobRunner
+from .theme import (
+    C,
+    F,
+    FAMILY,
+    Tooltip,
+    apply_ttk_style,
+    bind_hover,
+    button,
+    checkbox,
+    divider,
+    entry,
+    icon,
+    icon_button,
+    init_fonts,
+    label,
+    pill,
+    text_area,
+)
+from .widgets import (
+    MONTHS_IT,
+    ChoiceChips,
+    DarkMenu,
+    Modal,
+    MonthPickerPopup,
+    SegmentedBar,
+    Segmented,
+    ToastHost,
+    field_label,
+)
 
 # Velocità di scorrimento della lista worklog
 SCROLL_PIXEL_PER_UNITA = 20  # pixel per unità di scroll
 SCROLL_UNITA_PER_SCATTO = 3  # unità per ogni scatto della rotellina (3 x 20 = 60 px)
+
+ENTRY_TYPES = [
+    ("work", "Lavoro"),
+    ("off", "Extra Off"),
+    ("qxsupport_synced", "QxSupport ✓"),
+    ("ticket_synced", "Ticket ✓"),
+]
+OFF_TYPES = [
+    ("Annual Leave", "Ferie"),
+    ("Sick Leave", "Malattia"),
+    ("Permit", "Permesso"),
+    ("Other", "Altro"),
+]
+OFF_TYPE_LABELS = dict(OFF_TYPES)
+FILTERS = [
+    ("all", "Tutte"),
+    ("pending", "Da sincronizzare"),
+    ("synced", "Sincronizzate"),
+    ("off", "Extra Off"),
+]
+ALREADY_SYNCED_TYPES = {"qxsupport_synced", "ticket_synced"}
 
 
 class LoginWindow(tk.Tk):
@@ -29,8 +84,11 @@ class LoginWindow(tk.Tk):
         super().__init__()
         self.title("Login Time")
         self.geometry("1366x768")
+        self.minsize(1200, 700)
         self.after(50, self._maximize_window)
-        self.configure(bg="#1f1f22")
+        self.configure(bg=C["bg_app"])
+        init_fonts(self)
+        apply_ttk_style(self)
 
         self.work_logs: list[dict[str, str]] = load_work_logs()
         self.worklog_rows: tk.Frame | None = None
@@ -45,6 +103,20 @@ class LoginWindow(tk.Tk):
         self.summary_var = tk.StringVar(value="")
         self.month_view_var = tk.StringVar(value="")
         self.selected_month_offset = 0
+
+        self.toast = ToastHost(self)
+        self.jobs = JobRunner(self)
+        self.rows_in_flight: set[int] = set()
+        self.protocol("WM_DELETE_WINDOW", self._confirm_close)
+        self.filter_var = tk.StringVar(value="all")
+        self.search_var = tk.StringVar(value="")
+        self.expanded_tickets: dict[str, bool] = {}
+        self.kpi_labels: dict[str, tuple[tk.Label, tk.Label]] = {}
+        self.filter_buttons: dict[str, tk.Button] = {}
+        self._render_after_id: str | None = None
+        self.filter_var.trace_add("write", lambda *_: self._render_worklogs())
+        self.search_var.trace_add("write", lambda *_: self._schedule_render())
+
         self._bootstrap_ticket_uuid_cache()
         self._build_login_ui()
 
@@ -58,382 +130,333 @@ class LoginWindow(tk.Tk):
                 pass
 
     def _clear_window(self) -> None:
+        self.toast.hide()
         for child in self.winfo_children():
             child.destroy()
 
+    # ------------------------------------------------------------------ feedback
+    def _toast(self, message: str, kind: str = "success", **kwargs: object) -> None:
+        self.toast.show(message, kind, **kwargs)
+
+    def _notify_error(self, title: str, detail: object) -> None:
+        detail_text = str(detail)
+        short = detail_text if len(detail_text) <= 110 else detail_text[:107] + "…"
+        self._toast(
+            f"{title}: {short}",
+            "error",
+            action_text="Dettagli",
+            action=lambda: messagebox.showerror(title, detail_text),
+        )
+
+    def _copy_with_toast(self, value: str, message: str) -> None:
+        self._copy_text_direct(value)
+        self._toast(message)
+
+    # ------------------------------------------------------------------ login
     def _build_login_ui(self) -> None:
         self._clear_window()
+        self.worklog_rows = None
+        self.worklog_canvas = None
+        self.kpi_labels = {}
+        self.filter_buttons = {}
+        self.unbind("<Control-n>")
+        self.configure(bg=C["bg_app"])
 
-        card = tk.Frame(self, bg="#2b2b30", padx=36, pady=36)
-        card.place(relx=0.46, rely=0.38, anchor="center")
+        surface = C["surface"]
+        card = tk.Frame(self, bg=surface, highlightthickness=1, highlightbackground=C["border"], padx=32, pady=30)
+        card.place(relx=0.5, rely=0.45, anchor="center")
 
-        title = tk.Label(
-            card,
-            text="QUIXANT",
-            font=("Segoe UI", 28, "bold"),
-            fg="#ff6a00",
-            bg="#2b2b30",
-        )
-        title.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 18))
+        tk.Label(card, text="QUIXANT", font=(FAMILY, 20, "bold"), fg=C["accent"], bg=surface).pack(anchor="w")
+        label(card, "login_time · registra e sincronizza le ore", kind="muted", bg=surface).pack(anchor="w", pady=(4, 14))
+        tk.Frame(card, bg=C["accent"], height=2, width=48).pack(anchor="w", pady=(0, 18))
 
-        subtitle = tk.Label(
-            card,
-            text="Log in",
-            font=("Segoe UI", 20),
-            fg="#f4f4f6",
-            bg="#2b2b30",
-        )
-        subtitle.grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 18))
-
-        user_label = tk.Label(
-            card,
-            text="Username",
-            font=("Segoe UI", 12),
-            fg="#e9e9ee",
-            bg="#2b2b30",
-        )
-        user_label.grid(row=2, column=0, sticky="w")
-
-        self.user_entry = tk.Entry(card, width=42, font=("Segoe UI", 12))
-        self.user_entry.grid(row=3, column=0, columnspan=2, pady=(6, 16))
+        field_label(card, "Email", bg=surface).pack(anchor="w", pady=(0, 6))
+        self.user_entry = entry(card, width=36)
+        self.user_entry.pack(fill="x")
         self.user_entry.insert(0, self.credentials["username"])
 
-        pass_label = tk.Label(
-            card,
-            text="Password",
-            font=("Segoe UI", 12),
-            fg="#e9e9ee",
-            bg="#2b2b30",
+        field_label(card, "Password", bg=surface).pack(anchor="w", pady=(14, 6))
+        pw_row = tk.Frame(card, bg=C["raised"], highlightthickness=1, highlightbackground=C["border"])
+        pw_row.pack(fill="x")
+        self.pass_entry = tk.Entry(
+            pw_row,
+            show="•",
+            font=(FAMILY, 11),
+            bg=C["raised"],
+            fg=C["text"],
+            insertbackground=C["text"],
+            selectbackground=C["accent"],
+            selectforeground=C["on_accent"],
+            relief="flat",
+            bd=6,
+            highlightthickness=0,
         )
-        pass_label.grid(row=4, column=0, sticky="w")
-
-        self.pass_entry = tk.Entry(card, width=42, font=("Segoe UI", 12), show="*")
-        self.pass_entry.grid(row=5, column=0, columnspan=2, pady=(6, 20))
+        self.pass_entry.pack(side="left", fill="x", expand=True)
         self.pass_entry.insert(0, self.credentials["password"])
+        self.pass_entry.bind("<FocusIn>", lambda _e: pw_row.configure(highlightbackground=C["accent"]))
+        self.pass_entry.bind("<FocusOut>", lambda _e: pw_row.configure(highlightbackground=C["border"]))
 
-        login_btn = tk.Button(
+        def toggle_password() -> None:
+            self.pass_entry.configure(show="" if self.pass_entry.cget("show") else "•")
+
+        icon_button(pw_row, "eye", toggle_password, parent_bg=C["raised"], tooltip="Mostra / nascondi password").pack(side="right", padx=2)
+
+        self.remember_var = tk.BooleanVar(value=not self.credentials.get("password"))
+        checkbox(card, "Ricorda le credenziali su questo PC", self.remember_var, bg=surface).pack(anchor="w", pady=(14, 0))
+
+        self.login_error = label(card, "", bg=surface, fg=C["danger"], wraplength=340)
+        self.login_error.pack(anchor="w", pady=(8, 0))
+
+        button(card, "ACCEDI", self._handle_login, variant="primary", size="lg").pack(fill="x", pady=(10, 0))
+        label(
             card,
-            text="LOG IN",
-            font=("Segoe UI", 11, "bold"),
-            bg="#ff6a00",
-            fg="#ffffff",
-            activebackground="#e65f00",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=22,
-            pady=8,
-            command=self._handle_login,
-        )
-        login_btn.grid(row=6, column=0, sticky="w", pady=(0, 8))
+            f"Password salvata in: {credentials_storage_label()}.\nLa connessione al portale avviene al primo sync.",
+            kind="subtle",
+            bg=surface,
+        ).pack(anchor="w", pady=(14, 0))
 
-        save_btn = tk.Button(
-            card,
-            text="Save as default",
-            font=("Segoe UI", 10),
-            bg="#3a3a40",
-            fg="#f4f4f6",
-            relief="flat",
-            padx=16,
-            pady=8,
-            command=self._save_defaults,
-        )
-        save_btn.grid(row=6, column=1, sticky="e", pady=(0, 8))
-
-    def _save_defaults(self) -> None:
-        username = self.user_entry.get().strip()
-        password = self.pass_entry.get().strip()
-
-        if not username or not password:
-            messagebox.showerror("Error", "Username and password are required.")
-            return
-
-        save_credentials(username, password)
-        self.credentials = {"username": username, "password": password}
-        messagebox.showinfo("Saved", "Default credentials updated.")
+        for widget in (self.user_entry, self.pass_entry):
+            widget.bind("<Return>", lambda _e: self._handle_login())
+        (self.pass_entry if self.user_entry.get() else self.user_entry).focus_set()
 
     def _handle_login(self) -> None:
         username = self.user_entry.get().strip()
         password = self.pass_entry.get().strip()
 
-        if username == self.credentials["username"] and password == self.credentials["password"]:
-            messagebox.showinfo("Success", "Login done")
-            self._show_dashboard(username)
+        if not username or not password:
+            self.login_error.configure(text="Inserisci email e password.")
             return
 
-        messagebox.showerror("Error", "Invalid credentials.")
+        has_saved_password = bool(self.credentials.get("password"))
+        matches = username == self.credentials["username"] and password == self.credentials["password"]
+        remember = bool(self.remember_var.get())
+        if not has_saved_password:
+            # Nothing stored yet (first run): use what was typed for this session.
+            if remember:
+                save_credentials(username, password)
+            self.credentials = {"username": username, "password": password}
+            self.api_token = ""
+            self.api_token_user = ""
+            self._show_dashboard(username)
+            return
+        if not matches and not remember:
+            self.login_error.configure(
+                text="Credenziali diverse da quelle salvate. Spunta “Ricorda le credenziali” per aggiornarle."
+            )
+            return
 
+        if not matches and remember:
+            save_credentials(username, password)
+            self.credentials = {"username": username, "password": password}
+            self.api_token = ""
+            self.api_token_user = ""
+
+        self._show_dashboard(username)
+
+    # ------------------------------------------------------------------ dashboard
     def _show_dashboard(self, username: str) -> None:
         self._clear_window()
+        self.configure(bg=C["bg_app"])
+        self.kpi_labels = {}
+        self.filter_buttons = {}
 
-        dashboard = tk.Frame(self, bg="#1f1f22", padx=28, pady=28)
-        dashboard.pack(fill="both", expand=True)
+        shell = tk.Frame(self, bg=C["bg_app"])
+        shell.pack(fill="both", expand=True)
 
-        topbar = tk.Frame(dashboard, bg="#1f1f22")
-        topbar.pack(fill="x", anchor="n")
+        self._build_topbar(shell, username)
 
-        summary_label = tk.Label(
-            topbar,
-            textvariable=self.summary_var,
-            font=("Segoe UI", 10, "bold"),
-            fg="#f4f4f6",
-            bg="#1f1f22",
-            anchor="w",
-        )
-        summary_label.pack(fill="x", padx=(0, 18), pady=(0, 10))
+        main = tk.Frame(shell, bg=C["bg_app"], padx=24, pady=16)
+        main.pack(fill="both", expand=True)
+        self._build_month_bar(main)
+        self._build_kpi_panel(main)
+        self._build_filter_row(main)
+        self._build_worklog_list(main)
 
-        controls_row = tk.Frame(dashboard, bg="#1f1f22")
-        controls_row.pack(fill="x", anchor="n", pady=(0, 6))
+        self.bind_all("<MouseWheel>", self._scroll_rotellina)
+        self.bind("<Control-n>", lambda _e: self._open_worklog_window())
+        self._render_worklogs()
 
-        action_row = tk.Frame(controls_row, bg="#1f1f22")
-        action_row.pack(side="left")
+    def _build_topbar(self, parent: tk.Misc, username: str) -> None:
+        surface = C["surface"]
+        bar = tk.Frame(parent, bg=surface, padx=24, pady=10)
+        bar.pack(fill="x")
+        divider(parent).pack(fill="x")
 
-        monthly_report_btn = tk.Button(
-            action_row,
-            text="Monthly Report",
-            font=("Segoe UI", 10, "bold"),
-            bg="#3a3a40",
-            fg="#f4f4f6",
-            activebackground="#4a4a50",
-            activeforeground="#ffffff",
+        brand = tk.Frame(bar, bg=surface)
+        brand.pack(side="left")
+        tk.Label(brand, text="QUIXANT", font=F["brand"], fg=C["accent"], bg=surface).pack(side="left")
+        label(brand, "login_time", kind="muted", bg=surface).pack(side="left", padx=(10, 0))
+
+        name_part = username.split("@")[0] if username else "marco.papa"
+        pieces = [p for p in re.split(r"[._\-]", name_part) if p]
+        initials = "".join(p[0] for p in pieces[:2]).upper() or "MP"
+        avatar = tk.Button(
+            bar,
+            text=initials,
+            font=F["small_bold"],
+            bg=C["accent_bg"],
+            fg=C["accent_text"],
+            activebackground="#4a3422",
+            activeforeground=C["accent_text"],
             relief="flat",
-            padx=14,
-            pady=8,
-            command=self._open_monthly_report,
-        )
-        monthly_report_btn.pack(side="left", padx=(0, 12), pady=(0, 18))
-
-        ticket_btn = tk.Button(
-            action_row,
-            text="Open Ticket",
-            font=("Segoe UI", 10, "bold"),
-            bg="#3a3a40",
-            fg="#f4f4f6",
-            activebackground="#4a4a50",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=14,
-            pady=8,
-            command=self._open_ticket_window,
-        )
-        ticket_btn.pack(side="left", padx=(0, 12), pady=(0, 18))
-
-        sync_month_btn = tk.Button(
-            action_row,
-            text="API Sync Month",
-            font=("Segoe UI", 10, "bold"),
-            bg="#3a3a40",
-            fg="#f4f4f6",
-            activebackground="#4a4a50",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=14,
-            pady=8,
-            command=self._sync_current_month,
-        )
-        sync_month_btn.pack(side="left", pady=(0, 18))
-
-        import_qxsupport_btn = tk.Button(
-            action_row,
-            text="Import QxSupport Month",
-            font=("Segoe UI", 10, "bold"),
-            bg="#3a3a40",
-            fg="#f4f4f6",
-            activebackground="#4a4a50",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=14,
-            pady=8,
-            command=self._import_qxsupport_current_month,
-        )
-        import_qxsupport_btn.pack(side="left", padx=(12, 0), pady=(0, 18))
-
-        account_row = tk.Frame(controls_row, bg="#1f1f22")
-        account_row.pack(side="right")
-
-        search_entry = tk.Entry(account_row, font=("Segoe UI", 12), width=34)
-        search_entry.insert(0, "Search")
-        search_entry.pack(side="right", padx=(0, 12), pady=(0, 18))
-
-        profile_btn = tk.Button(
-            account_row,
-            text="MP",
-            font=("Segoe UI", 12, "bold"),
-            bg="#ff6a00",
-            fg="#ffffff",
-            activebackground="#e65f00",
-            activeforeground="#ffffff",
-            relief="flat",
+            bd=0,
             width=4,
-            command=lambda: self._show_profile_menu(profile_btn),
-        )
-        profile_btn.pack(side="right", pady=(0, 18))
-
-        first_name = username.split("@")[0].split(".")[0].capitalize() if username else "Marco"
-        welcome = tk.Label(
-            dashboard,
-            text=f"Welcome {first_name}",
-            font=("Segoe UI", 36, "bold"),
-            fg="#f4f4f6",
-            bg="#1f1f22",
-        )
-        welcome.pack(anchor="nw")
-
-        info = tk.Label(
-            dashboard,
-            text="Dashboard ready",
-            font=("Segoe UI", 16),
-            fg="#bcbcc7",
-            bg="#1f1f22",
-        )
-        info.pack(anchor="nw", pady=(18, 0))
-
-        ticket_panel = tk.Frame(dashboard, bg="#14161b", highlightthickness=1, highlightbackground="#2c2f36")
-        ticket_panel.pack(fill="both", expand=True, pady=(22, 0))
-
-        ticket_title = tk.Label(
-            ticket_panel,
-            text="Log working time (local)",
-            font=("Segoe UI", 12, "bold"),
-            fg="#f4f4f6",
-            bg="#14161b",
-        )
-        ticket_title.pack(anchor="w", padx=12, pady=(10, 8))
-
-        ticket_actions = tk.Frame(ticket_panel, bg="#14161b")
-        ticket_actions.pack(fill="x", padx=10, pady=(0, 8))
-
-        add_worklog_btn = tk.Button(
-            ticket_actions,
-            text="+ Log new working time",
-            font=("Segoe UI", 10),
-            bg="#14161b",
-            fg="#f4f4f6",
-            activebackground="#1d2129",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=4,
-            pady=4,
-            command=self._open_worklog_window,
-        )
-        add_worklog_btn.pack(side="left")
-
-        add_off_btn = tk.Button(
-            ticket_actions,
-            text="+ Add Extra Off (Ferie)",
-            font=("Segoe UI", 10),
-            bg="#14161b",
-            fg="#f4f4f6",
-            activebackground="#1d2129",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=4,
-            pady=4,
-            command=lambda: self._open_worklog_window("off"),
-        )
-        add_off_btn.pack(side="left", padx=(10, 0))
-
-        add_qxsupport_synced_btn = tk.Button(
-            ticket_actions,
-            text="+ Add QxSupport (synced)",
-            font=("Segoe UI", 10),
-            bg="#14161b",
-            fg="#f4f4f6",
-            activebackground="#1d2129",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=4,
-            pady=4,
-            command=lambda: self._open_worklog_window("qxsupport_synced"),
-        )
-        add_qxsupport_synced_btn.pack(side="left", padx=(10, 0))
-
-        add_ticket_synced_btn = tk.Button(
-            ticket_actions,
-            text="+ Import existing ticket",
-            font=("Segoe UI", 10),
-            bg="#14161b",
-            fg="#f4f4f6",
-            activebackground="#1d2129",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=4,
-            pady=4,
-            command=lambda: self._open_worklog_window("ticket_synced"),
-        )
-        add_ticket_synced_btn.pack(side="left", padx=(10, 0))
-
-        month_switcher = tk.Frame(ticket_panel, bg="#14161b")
-        month_switcher.pack(fill="x", padx=10, pady=(0, 8))
-
-        tk.Button(
-            month_switcher,
-            text="Current Month",
-            font=("Segoe UI", 10, "bold"),
-            bg="#3a3a40",
-            fg="#f4f4f6",
-            activebackground="#4a4a50",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=12,
             pady=6,
-            command=lambda: self._set_dashboard_month(0),
-        ).pack(side="left")
-
-        tk.Button(
-            month_switcher,
-            text="Previous Month",
-            font=("Segoe UI", 10, "bold"),
-            bg="#3a3a40",
-            fg="#f4f4f6",
-            activebackground="#4a4a50",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=12,
-            pady=6,
-            command=lambda: self._set_dashboard_month(-1),
-        ).pack(side="left", padx=(8, 0))
-
-        tk.Button(
-            month_switcher,
-            text="Two Months Ago",
-            font=("Segoe UI", 10, "bold"),
-            bg="#3a3a40",
-            fg="#f4f4f6",
-            activebackground="#4a4a50",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=12,
-            pady=6,
-            command=lambda: self._set_dashboard_month(-2),
-        ).pack(side="left", padx=(8, 0))
-
-        tk.Label(
-            month_switcher,
-            textvariable=self.month_view_var,
-            font=("Segoe UI", 10, "bold"),
-            fg="#bcbcc7",
-            bg="#14161b",
-        ).pack(side="left", padx=(18, 0))
-
-        line = tk.Frame(ticket_panel, bg="#ff6a00", height=1)
-        line.pack(fill="x", padx=10, pady=(6, 10))
-
-        scroll_host = tk.Frame(ticket_panel, bg="#14161b")
-        scroll_host.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-
-        self.worklog_canvas = tk.Canvas(
-            scroll_host,
-            bg="#14161b",
             highlightthickness=0,
-            yscrollincrement=SCROLL_PIXEL_PER_UNITA,
+            cursor="hand2",
         )
+        avatar.configure(command=lambda: self._show_profile_menu(avatar))
+        avatar.pack(side="right")
+        Tooltip(avatar, "Profilo e strumenti")
+
+        button(bar, "Monthly Report ↗", self._open_monthly_report, parent_bg=surface).pack(side="right", padx=(0, 12))
+
+        search_box = tk.Frame(bar, bg=C["raised"], highlightthickness=1, highlightbackground=C["border"])
+        search_box.pack(side="right", padx=(0, 12))
+        glyph, glyph_font = icon("search")
+        tk.Label(search_box, text=glyph, font=glyph_font, bg=C["raised"], fg=C["muted"]).pack(side="left", padx=(8, 0))
+        search_entry = tk.Entry(
+            search_box,
+            textvariable=self.search_var,
+            width=34,
+            font=F["body"],
+            bg=C["raised"],
+            fg=C["text"],
+            insertbackground=C["text"],
+            relief="flat",
+            bd=6,
+            highlightthickness=0,
+        )
+        search_entry.pack(side="left")
+        placeholder = tk.Label(search_box, text="Cerca ticket, descrizione, work log…", font=F["body"], bg=C["raised"], fg=C["subtle"])
+
+        def refresh_placeholder(*_: object) -> None:
+            if self.search_var.get() or self.focus_get() is search_entry:
+                placeholder.place_forget()
+            else:
+                placeholder.place(in_=search_entry, x=6, rely=0.5, anchor="w")
+
+        search_entry.bind("<FocusIn>", lambda _e: (search_box.configure(highlightbackground=C["accent"]), refresh_placeholder()))
+        search_entry.bind("<FocusOut>", lambda _e: (search_box.configure(highlightbackground=C["border"]), refresh_placeholder()))
+        search_entry.bind("<Escape>", lambda _e: self.search_var.set(""))
+        placeholder.bind("<Button-1>", lambda _e: search_entry.focus_set())
+        self.search_var.trace_add("write", refresh_placeholder)
+        self.after(20, refresh_placeholder)
+
+    def _build_month_bar(self, parent: tk.Misc) -> None:
+        bg = C["bg_app"]
+        row = tk.Frame(parent, bg=bg)
+        row.pack(fill="x", pady=(0, 16))
+
+        picker = tk.Frame(row, bg=C["surface"], highlightthickness=1, highlightbackground=C["border"])
+        picker.pack(side="left")
+        icon_button(picker, "chev_left", lambda: self._shift_month(-1), parent_bg=C["surface"], tooltip="Mese precedente").pack(side="left", padx=2)
+        self.month_button = tk.Button(
+            picker,
+            text="",
+            font=F["subtitle"],
+            width=15,
+            bg=C["surface"],
+            fg=C["text"],
+            activebackground=C["hover"],
+            activeforeground=C["text"],
+            relief="flat",
+            bd=0,
+            pady=6,
+            highlightthickness=0,
+            cursor="hand2",
+            command=self._open_month_picker,
+        )
+        bind_hover(self.month_button, C["surface"], C["hover"])
+        self.month_button.pack(side="left")
+        self.next_month_btn = icon_button(picker, "chev_right", lambda: self._shift_month(1), parent_bg=C["surface"], tooltip="Mese successivo")
+        self.next_month_btn.pack(side="left", padx=2)
+
+        self.month_tag_slot = tk.Frame(row, bg=bg)
+        self.month_tag_slot.pack(side="left", padx=(12, 0))
+
+        button(row, "+  Nuova voce", self._open_worklog_window, variant="primary").pack(side="right")
+        self.sync_month_btn = button(row, "Sincronizza mese", self._sync_current_month, parent_bg=bg, bold=True)
+        self.sync_month_btn.pack(side="right", padx=(0, 12))
+        self.status_pill = tk.Label(row, text="", font=F["small_bold"], padx=10, pady=6)
+        self.status_pill.pack(side="right", padx=(0, 12))
+
+    def _build_kpi_panel(self, parent: tk.Misc) -> None:
+        surface = C["surface"]
+        panel = tk.Frame(parent, bg=surface, highlightthickness=1, highlightbackground=C["border"], padx=16, pady=14)
+        panel.pack(fill="x", pady=(0, 16))
+
+        grid = tk.Frame(panel, bg=surface)
+        grid.pack(fill="x")
+        specs = [
+            ("target", "Target", C["text"]),
+            ("work", "Lavoro", C["text"]),
+            ("off", "Extra Off", C["off"]),
+            ("synced", "Sincronizzate", C["ok"]),
+            ("pending", "Da sincronizzare", C["warn"]),
+            ("missing", "Mancanti", C["accent_text"]),
+        ]
+        for column, (key, title, color) in enumerate(specs):
+            card = tk.Frame(grid, bg=C["bg_app"], highlightthickness=1, highlightbackground=C["border"], padx=14, pady=10)
+            card.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 12, 0))
+            grid.columnconfigure(column, weight=1, uniform="kpi")
+            tk.Label(card, text=title.upper(), font=F["caption"], fg=C["muted"], bg=C["bg_app"]).pack(anchor="w")
+            value = tk.Label(card, text="–", font=F["kpi"], fg=color, bg=C["bg_app"])
+            value.pack(anchor="w")
+            sub = tk.Label(card, text="", font=F["small"], fg=C["subtle"], bg=C["bg_app"])
+            sub.pack(anchor="w")
+            self.kpi_labels[key] = (value, sub)
+
+        self.progress_bar = SegmentedBar(panel, height=10, bg=surface)
+        self.progress_bar.pack(fill="x", pady=(14, 8))
+
+        legend = tk.Frame(panel, bg=surface)
+        legend.pack(fill="x")
+        self.legend_labels: dict[str, tk.Label] = {}
+        for key, color in (("synced", C["ok"]), ("pending", C["warn"]), ("missing", C["raised"])):
+            item = tk.Frame(legend, bg=surface)
+            item.pack(side="left", padx=(0, 20))
+            tk.Frame(item, bg=color, width=10, height=10, highlightthickness=1 if key == "missing" else 0, highlightbackground="#4a4e59").pack(side="left", padx=(0, 6))
+            text = tk.Label(item, text="", font=F["small"], fg=C["muted"], bg=surface)
+            text.pack(side="left")
+            self.legend_labels[key] = text
+        self.progress_total_label = tk.Label(legend, text="", font=F["small"], fg=C["muted"], bg=surface)
+        self.progress_total_label.pack(side="right")
+
+    def _build_filter_row(self, parent: tk.Misc) -> None:
+        bg = C["bg_app"]
+        row = tk.Frame(parent, bg=bg)
+        row.pack(fill="x", pady=(0, 10))
+        for value, _text in FILTERS:
+            btn = tk.Button(
+                row,
+                text="",
+                font=F["body"],
+                relief="flat",
+                bd=0,
+                padx=12,
+                pady=5,
+                cursor="hand2",
+                highlightthickness=1,
+                command=lambda v=value: self.filter_var.set(v),
+            )
+            btn.pack(side="left", padx=(0, 8))
+            self.filter_buttons[value] = btn
+        label(row, "Ctrl+N nuova voce · più recenti in alto", kind="subtle", bg=bg).pack(side="right")
+
+    def _build_worklog_list(self, parent: tk.Misc) -> None:
+        bg = C["bg_app"]
+        scroll_host = tk.Frame(parent, bg=bg)
+        scroll_host.pack(fill="both", expand=True)
+
+        self.worklog_canvas = tk.Canvas(scroll_host, bg=bg, highlightthickness=0, yscrollincrement=SCROLL_PIXEL_PER_UNITA)
         self.worklog_canvas.pack(side="left", fill="both", expand=True)
 
-        scrollbar = tk.Scrollbar(scroll_host, orient="vertical", command=self.worklog_canvas.yview)
-        scrollbar.pack(side="right", fill="y")
+        scrollbar = ttk.Scrollbar(scroll_host, orient="vertical", command=self.worklog_canvas.yview)
+        scrollbar.pack(side="right", fill="y", padx=(8, 0))
         self.worklog_canvas.configure(yscrollcommand=scrollbar.set)
 
-        self.worklog_rows = tk.Frame(self.worklog_canvas, bg="#14161b")
+        self.worklog_rows = tk.Frame(self.worklog_canvas, bg=bg)
         self.worklog_canvas_window = self.worklog_canvas.create_window((0, 0), window=self.worklog_rows, anchor="nw")
 
         self.worklog_rows.bind(
@@ -444,8 +467,6 @@ class LoginWindow(tk.Tk):
             "<Configure>",
             lambda event: self.worklog_canvas.itemconfig(self.worklog_canvas_window, width=event.width),
         )
-        self.bind_all("<MouseWheel>", self._scroll_rotellina)
-        self._render_worklogs()
 
     def _scroll_rotellina(self, event: tk.Event) -> None:
         try:
@@ -463,129 +484,152 @@ class LoginWindow(tk.Tk):
             pass
 
     def _show_profile_menu(self, anchor: tk.Widget) -> None:
-        menu = tk.Menu(self, tearoff=0, bg="#2b2b30", fg="#f4f4f6", activebackground="#3a3a40")
-        menu.add_command(label="My Profile")
-        menu.add_command(label="Company Profiles")
-        menu.add_command(label="Legal Documents")
-        menu.add_command(label="My Subscriptions")
-        menu.add_separator()
-        menu.add_command(label="Logout", command=self._logout)
-
-        x = anchor.winfo_rootx()
-        y = anchor.winfo_rooty() + anchor.winfo_height()
-        menu.tk_popup(x, y)
+        profile_menu = DarkMenu(self)
+        profile_menu.add_header(self.credentials["username"])
+        status = "connesso" if self.api_token else "non ancora connesso"
+        if self.jobs.running:
+            status = f"{self.jobs.label} in corso"
+        profile_menu.add_header(f"Portale: {status}", muted=True)
+        profile_menu.add_separator()
+        profile_menu.add_command("Apri ticket per codice…", self._open_ticket_window)
+        profile_menu.add_command("Importa QxSupport del mese", self._import_qxsupport_current_month, disabled=self.jobs.running)
+        profile_menu.add_separator()
+        profile_menu.add_command("Advanced · API tester", self._open_api_update_window)
+        profile_menu.add_separator()
+        profile_menu.add_command("Esci", self._logout)
+        profile_menu.popup_below(anchor, align_right=True)
 
     def _logout(self) -> None:
-        messagebox.showinfo("Logout", "Logout done")
+        if self.jobs.running:
+            self._toast(f"Attendi la fine di {self.jobs.label} prima di uscire", "info")
+            return
         self._build_login_ui()
+        self._toast("Disconnesso", "info")
 
-    def _open_ticket_window(self) -> None:
-        window = tk.Toplevel(self)
-        window.title("Open Ticket")
-        window.geometry("460x330")
-        window.configure(bg="#2b2b30")
-        window.resizable(False, False)
-        window.transient(self)
-        window.grab_set()
+    # ------------------------------------------------------------------ month navigation
+    def _offset_to_ym(self, offset: int) -> tuple[int, int]:
+        now = datetime.now()
+        index = now.year * 12 + (now.month - 1) + offset
+        return index // 12, index % 12 + 1
 
-        label = tk.Label(
-            window,
-            text="Ticket ID",
-            font=("Segoe UI", 12),
-            fg="#f4f4f6",
-            bg="#2b2b30",
+    def _ym_to_offset(self, year: int, month: int) -> int:
+        now = datetime.now()
+        return (year * 12 + month - 1) - (now.year * 12 + now.month - 1)
+
+    def _month_label_it(self, offset: int) -> str:
+        year, month = self._offset_to_ym(offset)
+        return f"{MONTHS_IT[month - 1]} {year}"
+
+    def _month_label_it_from_label(self, month_label: str) -> str:
+        try:
+            parsed = datetime.strptime(month_label, "%B %Y")
+        except ValueError:
+            return month_label
+        return f"{MONTHS_IT[parsed.month - 1]} {parsed.year}"
+
+    def _shift_month(self, delta: int) -> None:
+        new_offset = self.selected_month_offset + delta
+        if new_offset > 0:
+            return
+        self._set_dashboard_month(new_offset)
+
+    def _pending_month_keys(self) -> set[tuple[int, int]]:
+        keys: set[tuple[int, int]] = set()
+        for row in self.work_logs:
+            if self._is_worklog_synced(row):
+                continue
+            try:
+                parsed = datetime.strptime(str(row.get("month", "")), "%B %Y")
+            except ValueError:
+                continue
+            keys.add((parsed.year, parsed.month))
+        return keys
+
+    def _open_month_picker(self) -> None:
+        now = datetime.now()
+        MonthPickerPopup(
+            self,
+            self.month_button,
+            selected=self._offset_to_ym(self.selected_month_offset),
+            latest=(now.year, now.month),
+            pending_months=self._pending_month_keys(),
+            on_pick=lambda year, month: self._set_dashboard_month(self._ym_to_offset(year, month)),
         )
-        label.pack(anchor="w", padx=20, pady=(18, 8))
 
-        ticket_entry = tk.Entry(window, width=34, font=("Segoe UI", 12))
-        ticket_entry.pack(anchor="w", padx=20)
+    # ------------------------------------------------------------------ open ticket window
+    def _open_ticket_window(self) -> None:
+        window = Modal(self, "Apri ticket", width=520)
+        body = window.body
+
+        field_label(body, "Codice ticket").pack(anchor="w", pady=(0, 6))
+        ticket_entry = entry(body, width=40)
+        ticket_entry.pack(fill="x")
         ticket_entry.insert(0, "QUIX-")
         ticket_entry.focus_set()
+        ticket_entry.icursor("end")
 
-        creds_title = tk.Label(
-            window,
-            text="Default credentials",
-            font=("Segoe UI", 10, "bold"),
-            fg="#f4f4f6",
-            bg="#2b2b30",
-        )
-        creds_title.pack(anchor="w", padx=20, pady=(12, 4))
-
-        browser_user = tk.Entry(window, width=34, font=("Segoe UI", 10))
-        browser_user.pack(anchor="w", padx=20)
+        field_label(body, "Credenziali per il login nel browser").pack(anchor="w", pady=(16, 6))
+        browser_user = entry(body, width=40)
+        browser_user.pack(fill="x")
         browser_user.insert(0, self.credentials["username"])
-
-        browser_pass = tk.Entry(window, width=34, font=("Segoe UI", 10), show="*")
-        browser_pass.pack(anchor="w", padx=20, pady=(6, 0))
+        browser_pass = entry(body, width=40, show="•")
+        browser_pass.pack(fill="x", pady=(8, 0))
         browser_pass.insert(0, self.credentials["password"])
+        button(
+            body,
+            "Copia credenziali",
+            lambda: self._copy_credentials(browser_user.get().strip(), browser_pass.get().strip()),
+            size="sm",
+        ).pack(anchor="w", pady=(10, 0))
 
-        copy_btn = tk.Button(
-            window,
-            text="Copy credentials",
-            font=("Segoe UI", 9, "bold"),
-            bg="#3a3a40",
-            fg="#f4f4f6",
-            activebackground="#4a4a50",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=10,
-            pady=6,
-            command=lambda: self._copy_credentials(browser_user.get().strip(), browser_pass.get().strip()),
-        )
-        copy_btn.pack(anchor="w", padx=20, pady=(8, 0))
+        button(
+            window.footer,
+            "Advanced · API tester",
+            lambda: self._open_api_update_window(ticket_entry.get()),
+            variant="ghost",
+            parent_bg=C["surface"],
+        ).pack(side="left")
+        button(window.footer, "Apri nel browser", lambda: self._open_ticket_link(ticket_entry.get(), window), variant="primary").pack(side="right")
+        button(window.footer, "Annulla", window.destroy).pack(side="right", padx=(0, 10))
+        ticket_entry.bind("<Return>", lambda _e: self._open_ticket_link(ticket_entry.get(), window))
+        window.recenter()
 
-        open_btn = tk.Button(
-            window,
-            text="Open Link",
-            font=("Segoe UI", 10, "bold"),
-            bg="#ff6a00",
-            fg="#ffffff",
-            activebackground="#e65f00",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=14,
-            pady=8,
-            command=lambda: self._open_ticket_link(ticket_entry.get(), window),
-        )
-        open_btn.pack(anchor="e", padx=20, pady=(20, 0))
-
-        api_btn = tk.Button(
-            window,
-            text="API Update",
-            font=("Segoe UI", 10, "bold"),
-            bg="#3a3a40",
-            fg="#f4f4f6",
-            activebackground="#4a4a50",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=14,
-            pady=8,
-            command=lambda: self._open_api_update_window(ticket_entry.get()),
-        )
-        api_btn.pack(anchor="e", padx=20, pady=(10, 0))
-
+    # ------------------------------------------------------------------ new entry modal
     def _open_worklog_window(self, default_entry_type: str = "work") -> None:
-        window = tk.Toplevel(self)
-        window.title("Log working time")
-        window.geometry("620x630")
-        window.configure(bg="#2b2b30")
-        window.resizable(False, False)
-        window.transient(self)
-        window.grab_set()
+        valid_types = {value for value, _ in ENTRY_TYPES}
+        default_type = default_entry_type if default_entry_type in valid_types else "work"
 
-        if default_entry_type == "off":
-            default_type = "off"
-        elif default_entry_type == "qxsupport_synced":
-            default_type = "qxsupport_synced"
-        elif default_entry_type == "ticket_synced":
-            default_type = "ticket_synced"
-        else:
-            default_type = "work"
+        window = Modal(self, "Nuova voce", width=640)
+        body = window.body
+        surface = C["surface"]
 
         entry_type_var = tk.StringVar(value=default_type)
         off_type_var = tk.StringVar(value="Annual Leave")
+        if self.selected_month_offset == 0:
+            default_day = datetime.now().date()
+        else:
+            year, month = self._offset_to_ym(self.selected_month_offset)
+            default_day = date(year, month, 1)
+        date_var = tk.StringVar(value=default_day.strftime("%d/%m/%Y"))
+        end_var = tk.StringVar(value=default_day.strftime("%d/%m/%Y"))
+        hours_var = tk.StringVar(value="1h")
+        description_var = tk.StringVar(value="")
+        locked_ticket_var = tk.StringVar(value="")
+        off_summary_var = tk.StringVar(value="")
+        sync_now_var = tk.BooleanVar(value=False)
 
-        tk.Label(window, text="Ticket", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(16, 6))
+        Segmented(body, entry_type_var, ENTRY_TYPES, bg=surface).pack(fill="x", pady=(0, 16))
+
+        sections: list[tk.Frame] = []
+
+        def section() -> tk.Frame:
+            frame = tk.Frame(body, bg=surface)
+            sections.append(frame)
+            return frame
+
+        # Ticket (editable)
+        ticket_edit_section = section()
+        field_label(ticket_edit_section, "Ticket", required=True).pack(anchor="w", pady=(0, 6))
         ticket_titles: dict[str, str] = {}
         for row in self.work_logs:
             ticket_code = self._normalize_ticket_code(str(row.get("ticket", "")).strip()).upper()
@@ -594,234 +638,357 @@ class LoginWindow(tk.Tk):
             title = str(row.get("description", "")).strip()
             if ticket_code not in ticket_titles or (title and not ticket_titles[ticket_code]):
                 ticket_titles[ticket_code] = title
-
-        ticket_choices = [
-            f"{ticket_code} | {ticket_titles[ticket_code] or '(no title)'}"
-            for ticket_code in sorted(ticket_titles)
-        ]
-        ticket_choice_codes = {
-            choice: choice.split(" | ", 1)[0] for choice in ticket_choices
-        }
-        ticket_entry = ttk.Combobox(window, width=48, font=("Segoe UI", 11), values=ticket_choices)
-        ticket_entry.pack(anchor="w", padx=20)
+        ticket_choices = [f"{code} | {ticket_titles[code] or '(senza titolo)'}" for code in sorted(ticket_titles)]
+        ticket_choice_codes = {choice: choice.split(" | ", 1)[0] for choice in ticket_choices}
+        ticket_entry = ttk.Combobox(ticket_edit_section, font=(FAMILY, 11), values=ticket_choices)
+        ticket_entry.pack(fill="x")
         ticket_entry.insert(0, "QUIX-")
 
-        type_row = tk.Frame(window, bg="#2b2b30")
-        type_row.pack(anchor="w", padx=20, pady=(10, 0))
+        # Ticket (locked)
+        ticket_locked_section = section()
+        field_label(ticket_locked_section, "Ticket").pack(anchor="w", pady=(0, 6))
+        locked_box = tk.Frame(ticket_locked_section, bg=C["bg_app"], highlightthickness=1, highlightbackground=C["border_strong"], padx=10, pady=8)
+        locked_box.pack(fill="x")
+        lock_glyph, lock_font = icon("lock")
+        tk.Label(locked_box, text=lock_glyph, font=lock_font, bg=C["bg_app"], fg=C["muted"]).pack(side="left")
+        tk.Label(locked_box, textvariable=locked_ticket_var, font=F["body_bold"], bg=C["bg_app"], fg=C["text"]).pack(side="left", padx=(8, 0))
+        tk.Label(locked_box, text="· impostato automaticamente", font=F["body"], bg=C["bg_app"], fg=C["muted"]).pack(side="left", padx=(6, 0))
 
-        tk.Label(type_row, text="Type", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(side="left", padx=(0, 10))
-        tk.Radiobutton(
-            type_row,
-            text="Work",
-            value="work",
-            variable=entry_type_var,
-            font=("Segoe UI", 10),
-            fg="#f4f4f6",
-            bg="#2b2b30",
-            selectcolor="#2b2b30",
-            activebackground="#2b2b30",
-            activeforeground="#f4f4f6",
-        ).pack(side="left", padx=(0, 10))
-        tk.Radiobutton(
-            type_row,
-            text="Extra Off / Ferie",
-            value="off",
-            variable=entry_type_var,
-            font=("Segoe UI", 10),
-            fg="#f4f4f6",
-            bg="#2b2b30",
-            selectcolor="#2b2b30",
-            activebackground="#2b2b30",
-            activeforeground="#f4f4f6",
-        ).pack(side="left")
-        tk.Radiobutton(
-            type_row,
-            text="QxSupport (already synced)",
-            value="qxsupport_synced",
-            variable=entry_type_var,
-            font=("Segoe UI", 10),
-            fg="#f4f4f6",
-            bg="#2b2b30",
-            selectcolor="#2b2b30",
-            activebackground="#2b2b30",
-            activeforeground="#f4f4f6",
-        ).pack(side="left", padx=(10, 0))
-        tk.Radiobutton(
-            type_row,
-            text="Ticket (already synced)",
-            value="ticket_synced",
-            variable=entry_type_var,
-            font=("Segoe UI", 10),
-            fg="#f4f4f6",
-            bg="#2b2b30",
-            selectcolor="#2b2b30",
-            activebackground="#2b2b30",
-            activeforeground="#f4f4f6",
-        ).pack(side="left", padx=(10, 0))
+        # Off type
+        off_type_section = section()
+        field_label(off_type_section, "Tipo di assenza").pack(anchor="w", pady=(0, 6))
+        ChoiceChips(off_type_section, off_type_var, OFF_TYPES, bg=surface).pack(anchor="w")
 
-        off_type_row = tk.Frame(window, bg="#2b2b30")
-        off_type_row.pack(anchor="w", padx=20, pady=(8, 0))
-        tk.Label(off_type_row, text="Off type", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(side="left", padx=(0, 10))
-        off_type_combo = ttk.Combobox(
-            off_type_row,
-            state="readonly",
-            values=["Annual Leave", "Sick Leave", "Permit", "Other"],
-            textvariable=off_type_var,
-            font=("Segoe UI", 10),
-            width=18,
-        )
-        off_type_combo.pack(side="left")
+        # Dates + hours
+        def labelled_entry(parent: tk.Misc, text: str, var: tk.StringVar, column: int) -> tk.Entry:
+            cell = tk.Frame(parent, bg=surface)
+            cell.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 12, 0))
+            parent.columnconfigure(column, weight=1, uniform="dates")
+            field_label(cell, text).pack(anchor="w", pady=(0, 6))
+            widget = entry(cell, width=14, textvariable=var)
+            widget.pack(fill="x")
+            return widget
 
-        tk.Label(window, text="Working time", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(12, 6))
-        hours_entry = tk.Entry(window, width=14, font=("Segoe UI", 11))
-        hours_entry.pack(anchor="w", padx=20)
-        hours_entry.insert(0, "1h")
+        single_date_section = section()
+        labelled_entry(single_date_section, "Data", date_var, 0)
+        labelled_entry(single_date_section, "Ore", hours_var, 1)
 
-        tk.Label(window, text="Description", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(12, 6))
-        description_text = tk.Text(window, width=70, height=4, font=("Segoe UI", 10), wrap="word")
-        description_text.pack(anchor="w", padx=20)
+        range_date_section = section()
+        labelled_entry(range_date_section, "Dal", date_var, 0)
+        labelled_entry(range_date_section, "Al", end_var, 1)
+        labelled_entry(range_date_section, "Ore al giorno", hours_var, 2)
+
+        chips_section = section()
+        for preset in ("1h", "2h", "4h", "1d"):
+            button(chips_section, preset, lambda p=preset: hours_var.set(p), size="sm").pack(side="left", padx=(0, 6))
+        label(chips_section, "Formati: 1h · 2.5h · 1d · 1d 4h", kind="subtle", bg=surface).pack(side="left", padx=(6, 0))
+
+        # Description
+        description_section = section()
+        field_label(description_section, "Descrizione ticket").pack(anchor="w", pady=(0, 6))
+        entry(description_section, width=60, textvariable=description_var).pack(fill="x")
+
+        # Comment
+        comment_section = section()
+        comment_label_frame = tk.Frame(comment_section, bg=surface)
+        comment_label_frame.pack(anchor="w", pady=(0, 6))
+        comment_title = tk.Label(comment_label_frame, text="Work log", font=F["body"], bg=surface, fg=C["muted"])
+        comment_title.pack(side="left")
+        tk.Label(comment_label_frame, text=" *", font=F["body"], bg=surface, fg=C["accent_text"]).pack(side="left")
+        comment_text = text_area(comment_section, height=4)
+        comment_text.pack(fill="x")
+
+        # Off summary
+        off_summary_section = section()
+        info_box = tk.Frame(off_summary_section, bg=C["off_bg"], padx=12, pady=8)
+        info_box.pack(fill="x")
+        info_glyph, info_font = icon("info")
+        tk.Label(info_box, text=info_glyph, font=info_font, bg=C["off_bg"], fg="#c9daff").pack(side="left")
+        tk.Label(info_box, textvariable=off_summary_var, font=F["body"], bg=C["off_bg"], fg="#c9daff").pack(side="left", padx=(8, 0))
+
+        # Error
+        error_section = section()
+        error_label = tk.Label(error_section, text="", font=F["body"], bg=surface, fg=C["danger"], anchor="w", justify="left", wraplength=580)
+        error_label.pack(anchor="w")
+
+        # Footer
+        sync_check = checkbox(window.footer, "Sincronizza subito", sync_now_var, bg=surface)
+        sync_check.pack(side="left")
+        save_btn = button(window.footer, "Salva", lambda: save(), variant="primary")
+        save_btn.pack(side="right")
+        button(window.footer, "Annulla", window.destroy).pack(side="right", padx=(0, 10))
+
+        def show_error(message: str) -> None:
+            error_label.configure(text=message)
+            layout()
+
+        def layout() -> None:
+            selected = entry_type_var.get()
+            is_off = selected == "off"
+            is_qx = selected == "qxsupport_synced"
+            visible = [
+                ticket_locked_section if (is_off or is_qx) else ticket_edit_section,
+            ]
+            if is_off:
+                visible.append(off_type_section)
+                visible.append(range_date_section)
+            else:
+                visible.append(single_date_section)
+            visible.append(chips_section)
+            if not is_off:
+                visible.append(description_section)
+            visible.append(comment_section)
+            if is_off:
+                visible.append(off_summary_section)
+            if error_label.cget("text"):
+                visible.append(error_section)
+
+            for frame in sections:
+                frame.pack_forget()
+            for index, frame in enumerate(visible):
+                pady = (0, 6) if frame is chips_section else (0, 14)
+                if frame is single_date_section or frame is range_date_section:
+                    pady = (0, 8)
+                frame.pack(fill="x", pady=pady)
+
+            if selected in ALREADY_SYNCED_TYPES:
+                sync_check.pack_forget()
+            elif not sync_check.winfo_ismapped():
+                sync_check.pack(side="left")
+            window.recenter()
 
         def prefill_description(*_: object) -> None:
             ticket_code = self._normalize_ticket_code(ticket_entry.get().strip())
-            if not ticket_code:
+            if not ticket_code or description_var.get().strip():
                 return
-
             existing_description = self._find_ticket_description(ticket_code)
-            if not existing_description:
-                return
-
-            if description_text.get("1.0", "end").strip():
-                return
-
-            description_text.insert("1.0", existing_description)
+            if existing_description:
+                description_var.set(existing_description)
 
         def select_previous_ticket(*_: object) -> None:
-            selected_choice = ticket_entry.get().strip()
-            ticket_code = ticket_choice_codes.get(selected_choice)
+            ticket_code = ticket_choice_codes.get(ticket_entry.get().strip())
             if not ticket_code:
                 return
-
             ticket_entry.delete(0, "end")
             ticket_entry.insert(0, ticket_code)
             existing_description = self._find_ticket_description(ticket_code)
             if existing_description:
-                description_text.delete("1.0", "end")
-                description_text.insert("1.0", existing_description)
+                description_var.set(existing_description)
 
         ticket_entry.bind("<<ComboboxSelected>>", select_previous_ticket)
         ticket_entry.bind("<FocusOut>", prefill_description)
 
-        tk.Label(window, text="Comment", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(12, 6))
-        comment_text = tk.Text(window, width=55, height=6, font=("Segoe UI", 10), wrap="word")
-        comment_text.pack(anchor="w", padx=20)
+        def off_days() -> list[date] | None:
+            start = self._parse_user_date(date_var.get())
+            end = self._parse_user_date(end_var.get())
+            if start is None or end is None or end < start:
+                return None
+            return self._business_days_between(start, end)
+
+        def refresh_summary(*_: object) -> None:
+            if entry_type_var.get() != "off":
+                save_btn.configure(text="Salva")
+                return
+            days = off_days()
+            parsed = self._parse_working_time(hours_var.get())
+            off_label = OFF_TYPE_LABELS.get(off_type_var.get(), off_type_var.get())
+            if days is None:
+                off_summary_var.set("Controlla le date (gg/mm/aaaa, “Al” non prima di “Dal”).")
+                save_btn.configure(text="Salva")
+                return
+            if not days:
+                off_summary_var.set("Nessun giorno lavorativo nell'intervallo.")
+                save_btn.configure(text="Salva")
+                return
+            total = f"{parsed[1] * len(days):g}h" if parsed else "ore non valide"
+            day_word = "giorno lavorativo" if len(days) == 1 else "giorni lavorativi"
+            off_summary_var.set(f"{len(days)} {day_word} · {total} · inviata come {off_label} ({off_type_var.get()})")
+            save_btn.configure(text="Salva" if len(days) == 1 else f"Salva {len(days)} voci")
 
         def refresh_form_for_type(*_: object) -> None:
             selected_type = entry_type_var.get()
-            is_off = selected_type == "off"
-            is_qxsupport_synced = selected_type == "qxsupport_synced"
-            is_ticket_synced = selected_type == "ticket_synced"
-            if is_off:
-                off_type_row.pack(anchor="w", padx=20, pady=(8, 0))
-                ticket_entry.delete(0, "end")
-                ticket_entry.insert(0, "OFF")
-                ticket_entry.configure(state="disabled")
-                if not description_text.get("1.0", "end").strip():
-                    description_text.insert("1.0", "annual leave")
-                current_hours = hours_entry.get().strip().lower()
-                if current_hours in {"", "1h"}:
-                    hours_entry.delete(0, "end")
-                    hours_entry.insert(0, "8h")
-            elif is_qxsupport_synced:
-                off_type_row.pack_forget()
-                ticket_entry.configure(state="normal")
-                ticket_entry.delete(0, "end")
-                ticket_entry.insert(0, "QXSUPPORT")
-                ticket_entry.configure(state="disabled")
-                if not description_text.get("1.0", "end").strip():
-                    description_text.insert("1.0", "QxSupport monthly import")
-                if not comment_text.get("1.0", "end").strip():
+            comment_current = comment_text.get("1.0", "end").strip()
+            if selected_type == "off":
+                locked_ticket_var.set("OFF")
+                comment_title.configure(text="Commento")
+                if hours_var.get().strip().lower() in {"", "1h"}:
+                    hours_var.set("8h")
+                if not comment_current:
+                    comment_text.insert("1.0", OFF_TYPE_LABELS.get(off_type_var.get(), "Ferie"))
+            elif selected_type == "qxsupport_synced":
+                locked_ticket_var.set("QXSUPPORT")
+                comment_title.configure(text="Commento")
+                if not description_var.get().strip():
+                    description_var.set("QxSupport monthly import")
+                if not comment_current:
                     comment_text.insert("1.0", "Imported manually from QxSupport web")
-            elif is_ticket_synced:
-                off_type_row.pack_forget()
-                ticket_entry.configure(state="normal")
-                current_ticket = ticket_entry.get().strip().upper()
-                if current_ticket in {"", "OFF", "QUIX-", "QXSUPPORT"}:
-                    ticket_entry.delete(0, "end")
-                    ticket_entry.insert(0, "SFTC-")
             else:
-                off_type_row.pack_forget()
-                ticket_entry.configure(state="normal")
+                comment_title.configure(text="Work log")
                 current_ticket = ticket_entry.get().strip().upper()
-                if current_ticket in {"", "OFF", "QUIX-", "QXSUPPORT"}:
+                if current_ticket in {"", "OFF", "QUIX-", "QXSUPPORT", "SFTC-"}:
                     ticket_entry.delete(0, "end")
-                    ticket_entry.insert(0, "QUIX-")
+                    ticket_entry.insert(0, "SFTC-" if selected_type == "ticket_synced" else "QUIX-")
+            error_label.configure(text="")
+            refresh_summary()
+            layout()
 
         def refresh_off_defaults(*_: object) -> None:
             if entry_type_var.get() != "off":
                 return
+            current = comment_text.get("1.0", "end").strip()
+            if current in set(OFF_TYPE_LABELS.values()) | {"", "annual leave", "sick leave", "permit", "other"}:
+                comment_text.delete("1.0", "end")
+                comment_text.insert("1.0", OFF_TYPE_LABELS.get(off_type_var.get(), off_type_var.get()))
+            if off_type_var.get() in {"Annual Leave", "Sick Leave"} and hours_var.get().strip().lower() in {"", "1h"}:
+                hours_var.set("8h")
+            refresh_summary()
 
-            selected = off_type_var.get().strip()
-            if not selected:
+        def save() -> None:
+            selected_type = entry_type_var.get()
+            is_off = selected_type == "off"
+            comment = comment_text.get("1.0", "end").strip()
+
+            if selected_type in {"work", "ticket_synced"}:
+                ticket_value = ticket_entry.get().strip()
+                ticket_value = ticket_choice_codes.get(ticket_value, ticket_value)
+                ticket_code = self._normalize_ticket_code(ticket_value)
+                if not ticket_code or ticket_code in {"QUIX-", "SFTC-"} or ticket_code.endswith("-"):
+                    show_error("Inserisci un codice ticket valido (es. QUIX-707).")
+                    return
+            else:
+                ticket_value = locked_ticket_var.get()
+                ticket_code = ticket_value
+
+            parsed = self._parse_working_time(hours_var.get())
+            if parsed is None:
+                show_error("Ore non valide. Esempi: 1h, 2.5h, 1d, 1d 4h")
                 return
 
-            current_description = description_text.get("1.0", "end").strip().lower()
-            generic_defaults = {"", "annual leave", "sick leave", "permit", "other"}
-            if current_description in generic_defaults:
-                description_text.delete("1.0", "end")
-                description_text.insert("1.0", selected.lower())
+            if not comment:
+                show_error("Il commento è obbligatorio." if is_off or selected_type == "qxsupport_synced" else "Il work log è obbligatorio.")
+                return
 
-            current_hours = hours_entry.get().strip().lower()
-            if selected in {"Annual Leave", "Sick Leave"} and current_hours in {"", "1h"}:
-                hours_entry.delete(0, "end")
-                hours_entry.insert(0, "8h")
+            start = self._parse_user_date(date_var.get())
+            if start is None:
+                show_error("Data non valida. Usa il formato gg/mm/aaaa.")
+                return
+
+            if is_off:
+                days = off_days()
+                if days is None:
+                    show_error("Intervallo non valido: “Al” deve essere uguale o successivo a “Dal”.")
+                    return
+                if not days:
+                    show_error("Nessun giorno lavorativo nell'intervallo scelto.")
+                    return
+                if len(days) > 31:
+                    show_error("Massimo 31 giorni per volta.")
+                    return
+            else:
+                if start > datetime.now().date():
+                    show_error("La data è nel futuro.")
+                    return
+                days = [start]
+
+            description = description_var.get().strip()
+            if is_off:
+                description = off_type_var.get().lower()
+
+            for day in days:
+                saved = self._append_worklog_entry_with_status(
+                    ticket_value,
+                    hours_var.get(),
+                    description,
+                    comment,
+                    entry_type=selected_type,
+                    off_type=off_type_var.get() if is_off else "",
+                    log_date=day,
+                    render=False,
+                )
+                if not saved:
+                    self._render_worklogs()
+                    return
+
+            target_offset = self._ym_to_offset(days[0].year, days[0].month)
+            if target_offset <= 0:
+                self.selected_month_offset = target_offset
+            self._render_worklogs()
+            window.destroy()
+
+            count = len(days)
+            if sync_now_var.get() and selected_type not in ALREADY_SYNCED_TYPES:
+                if count == 1:
+                    self._sync_single_worklog(0)
+                else:
+                    self._sync_multiple_worklogs(list(range(count)), f"{count} voci {ticket_code}")
+                return
+
+            hours_label = parsed[0]
+            if count == 1:
+                self._toast(f"{ticket_code} · {hours_label} salvata in locale")
+            else:
+                self._toast(f"{count} voci {ticket_code} salvate in locale")
 
         entry_type_var.trace_add("write", refresh_form_for_type)
         off_type_var.trace_add("write", refresh_off_defaults)
+        for var in (date_var, end_var, hours_var):
+            var.trace_add("write", refresh_summary)
+
+        window.bind("<Control-Return>", lambda _e: save())
         refresh_form_for_type()
         refresh_off_defaults()
+        if default_type in {"work", "ticket_synced"}:
+            ticket_entry.focus_set()
+            ticket_entry.icursor("end")
+        else:
+            comment_text.focus_set()
 
-        save_btn = tk.Button(
-            window,
-            text="Save log",
-            font=("Segoe UI", 10, "bold"),
-            bg="#ff6a00",
-            fg="#ffffff",
-            activebackground="#e65f00",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=14,
-            pady=8,
-            command=lambda: self._save_worklog(
-                ticket_entry.get().strip(),
-                hours_entry.get().strip(),
-                description_text.get("1.0", "end").strip(),
-                comment_text.get("1.0", "end").strip(),
-                entry_type_var.get(),
-                off_type_var.get(),
-                window,
-            ),
-        )
-        save_btn.pack(anchor="e", padx=20, pady=(16, 0))
+    def _parse_user_date(self, raw: str) -> date | None:
+        value = raw.strip()
+        if not value:
+            return None
+        for pattern in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d", "%d-%m-%Y", "%d.%m.%Y"):
+            try:
+                return datetime.strptime(value, pattern).date()
+            except ValueError:
+                continue
+        try:
+            partial = datetime.strptime(value, "%d/%m")
+            return date(datetime.now().year, partial.month, partial.day)
+        except ValueError:
+            return None
+
+    def _business_days_between(self, start: date, end: date) -> list[date]:
+        days: list[date] = []
+        holidays: dict[int, set[date]] = {}
+        current = start
+        while current <= end:
+            if current.year not in holidays:
+                holidays[current.year] = self._italian_public_holidays(current.year)
+            if current.weekday() < 5 and current not in holidays[current.year]:
+                days.append(current)
+            current += timedelta(days=1)
+        return days
 
     def _copy_credentials(self, username: str, password: str) -> None:
         if not username or not password:
-            messagebox.showerror("Error", "Username and password are required.")
+            messagebox.showerror("Errore", "Email e password sono obbligatorie.")
             return
 
         self.clipboard_clear()
         self.clipboard_append(f"{username}\n{password}")
-        messagebox.showinfo("Copied", "Credentials copied to clipboard (username then password).")
+        self._toast("Credenziali copiate (prima email, poi password)")
 
     def _open_ticket_link(self, ticket_value: str, window: tk.Toplevel) -> None:
         ticket = ticket_value.strip().upper()
         if not ticket:
-            messagebox.showerror("Error", "Insert a ticket code.")
+            messagebox.showerror("Errore", "Inserisci un codice ticket.", parent=window)
             return
 
         ticket = self._normalize_ticket_code(ticket)
 
         if ticket == "QUIX-":
-            messagebox.showerror("Error", "Insert a valid ticket code.")
+            messagebox.showerror("Errore", "Inserisci un codice ticket valido.", parent=window)
             return
 
         url = f"https://support.quixant.com/ticket/Edit/{ticket}"
@@ -850,7 +1017,7 @@ class LoginWindow(tk.Tk):
             return
 
         window.destroy()
-        messagebox.showinfo("Saved", "Working time logged locally.")
+        self._toast("Voce salvata in locale")
 
     def _append_worklog_entry(
         self,
@@ -884,6 +1051,8 @@ class LoginWindow(tk.Tk):
         api_month_displacement: str = "",
         entry_type: str = "work",
         off_type: str = "",
+        log_date: date | None = None,
+        render: bool = True,
     ) -> bool:
         normalized_type = "off" if str(entry_type).strip().lower() == "off" else "work"
         if str(entry_type).strip().lower() == "qxsupport_synced":
@@ -931,24 +1100,28 @@ class LoginWindow(tk.Tk):
         if force_synced and not synced_at_value:
             synced_at_value = datetime.now().astimezone().isoformat(timespec="seconds")
 
+        entry_day = log_date or datetime.now().date()
+        month_label = datetime(entry_day.year, entry_day.month, 1).strftime("%B %Y")
+
         item = {
             "working_time": working_time_label,
-            "month": datetime.now().strftime("%B %Y"),
+            "month": month_label,
             "work_log": comment,
             "ticket": ticket_code,
             "comment": comment,
             "description": ticket_description,
             "entry_type": normalized_type,
             "off_type": normalized_off_type,
-            "log_date": datetime.now().date().isoformat(),
+            "log_date": entry_day.isoformat(),
             "api_synced": "true" if api_synced or force_synced else "",
             "api_synced_at": synced_at_value,
             "api_ticket_uuid": api_ticket_uuid,
-            "api_month_displacement": api_month_displacement if api_month_displacement else self._month_displacement_for_label(self._get_summary_month()),
+            "api_month_displacement": api_month_displacement if api_month_displacement else self._month_displacement_for_label(month_label),
         }
         self.work_logs.insert(0, item)
         save_work_logs(self.work_logs)
-        self._render_worklogs()
+        if render:
+            self._render_worklogs()
         return True
 
     def _parse_working_time(self, raw: str) -> tuple[str, float] | None:
@@ -990,226 +1163,357 @@ class LoginWindow(tk.Tk):
 
         return (" ".join(pieces), total_hours)
 
+    # ------------------------------------------------------------------ worklog list
+    def _schedule_render(self) -> None:
+        if self._render_after_id is not None:
+            try:
+                self.after_cancel(self._render_after_id)
+            except tk.TclError:
+                pass
+        self._render_after_id = self.after(200, self._render_worklogs)
+
+    def _row_matches_filter(self, row: dict[str, str]) -> bool:
+        current = self.filter_var.get()
+        if current == "pending":
+            return not self._is_worklog_synced(row)
+        if current == "synced":
+            return self._is_worklog_synced(row)
+        if current == "off":
+            return self._is_off_entry(row)
+        return True
+
+    def _row_matches_search(self, row: dict[str, str]) -> bool:
+        query = self.search_var.get().strip().casefold()
+        if not query:
+            return True
+        haystack = " ".join(
+            str(row.get(key, "")) for key in ("ticket", "description", "work_log", "comment", "off_type")
+        ).casefold()
+        return all(part in haystack for part in query.split())
+
+    def _format_hours(self, hours_value: float) -> str:
+        return f"{hours_value:g}h"
+
+    def _format_row_date(self, row: dict[str, str]) -> str:
+        raw = str(row.get("log_date", "")).strip()
+        try:
+            return datetime.strptime(raw, "%Y-%m-%d").strftime("%d/%m")
+        except ValueError:
+            return "—"
+
+    def _short_sync_stamp(self, row: dict[str, str]) -> str:
+        synced_at = str(row.get("api_synced_at", "")).strip()
+        if not synced_at:
+            return ""
+        try:
+            parsed = datetime.fromisoformat(synced_at)
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone()
+            return parsed.strftime("%d/%m %H:%M")
+        except ValueError:
+            return synced_at.replace("T", " ")[:16]
+
+    def _update_filter_buttons(self, counts: dict[str, int]) -> None:
+        current = self.filter_var.get()
+        for value, text in FILTERS:
+            btn = self.filter_buttons.get(value)
+            if btn is None or not btn.winfo_exists():
+                continue
+            btn.configure(text=f"{text}   {counts.get(value, 0)}")
+            if value == current:
+                btn.configure(bg=C["accent_bg"], fg="#ffb27a", highlightbackground=C["accent"], activebackground=C["accent_bg"], activeforeground="#ffb27a", font=F["body_bold"])
+            else:
+                btn.configure(bg=C["surface"], fg=C["text"], highlightbackground=C["border"], activebackground=C["hover"], activeforeground=C["text"], font=F["body"])
+
     def _render_worklogs(self) -> None:
-        if self.worklog_rows is None:
+        self._render_after_id = None
+        if self.worklog_rows is None or not self.worklog_rows.winfo_exists():
             return
 
-        self._refresh_summary()
-        target_month = self._get_summary_month()
+        summary = self._refresh_summary()
+        month_label_it = self._month_label_it(self.selected_month_offset)
+
+        canvas = self.worklog_canvas
+        scroll_position = canvas.yview()[0] if canvas is not None else 0.0
 
         for child in self.worklog_rows.winfo_children():
             child.destroy()
 
-        visible_rows = [row for row in self.work_logs if str(row.get("month", "")) == target_month]
+        month_rows: list[dict[str, str]] = summary["rows"]
+        counts = {
+            "all": len(month_rows),
+            "pending": sum(1 for row in month_rows if not self._is_worklog_synced(row)),
+            "synced": sum(1 for row in month_rows if self._is_worklog_synced(row)),
+            "off": sum(1 for row in month_rows if self._is_off_entry(row)),
+        }
+        self._update_filter_buttons(counts)
 
-        if not visible_rows:
-            empty = tk.Label(
-                self.worklog_rows,
-                text=f"No working hours logged for {target_month}.",
-                font=("Segoe UI", 14),
-                fg="#f4f4f6",
-                bg="#14161b",
-            )
-            empty.pack(anchor="center", pady=(28, 0))
+        if not month_rows:
+            empty = tk.Frame(self.worklog_rows, bg=C["bg_app"])
+            empty.pack(fill="x", pady=48)
+            tk.Label(empty, text=f"Nessuna voce per {month_label_it}", font=F["subtitle"], fg=C["text"], bg=C["bg_app"]).pack()
+            label(empty, "Registra le ore lavorate, le ferie o importa quelle già presenti sul portale.", kind="muted", bg=C["bg_app"]).pack(pady=(6, 14))
+            button(empty, "+  Nuova voce", self._open_worklog_window, variant="primary").pack()
             return
 
-        grouped_logs = self._group_worklogs_by_ticket(visible_rows)
+        filtered = [row for row in month_rows if self._row_matches_filter(row) and self._row_matches_search(row)]
+        if not filtered:
+            empty = tk.Frame(self.worklog_rows, bg=C["bg_app"])
+            empty.pack(fill="x", pady=40)
+            label(empty, "Nessuna voce corrisponde ai filtri attivi.", kind="muted", bg=C["bg_app"]).pack()
 
-        for ticket, bundle in grouped_logs.items():
-            card = tk.Frame(self.worklog_rows, bg="#171a20", highlightthickness=1, highlightbackground="#2c2f36")
-            card.pack(fill="x", pady=(0, 10))
+            def reset_filters() -> None:
+                self.search_var.set("")
+                self.filter_var.set("all")
 
-            top = tk.Frame(card, bg="#171a20")
-            top.pack(fill="x", padx=10, pady=(10, 6))
+            button(empty, "Azzera filtri", reset_filters, size="sm").pack(pady=(10, 0))
+            return
 
-            title_block = tk.Frame(top, bg="#171a20")
-            title_block.pack(side="left", fill="x", expand=True)
+        grouped = self._group_worklogs_by_ticket(filtered)
 
-            tk.Label(title_block, text=ticket, font=("Segoe UI", 12, "bold"), fg="#f4f4f6", bg="#171a20").pack(anchor="w")
-            tk.Label(
-                title_block,
-                text=bundle["description"] or "No description",
-                font=("Segoe UI", 10),
-                fg="#bcbcc7",
-                bg="#171a20",
-                wraplength=520,
-                justify="left",
-            ).pack(anchor="w", pady=(2, 0))
+        def latest_date(item: tuple[str, dict[str, object]]) -> str:
+            entries = item[1]["entries"]
+            assert isinstance(entries, list)
+            return max((str(e["row"].get("log_date", "")) for e in entries), default="")
 
-            ticket_actions = tk.Frame(top, bg="#171a20")
-            ticket_actions.pack(side="right")
+        def has_pending(item: tuple[str, dict[str, object]]) -> bool:
+            entries = item[1]["entries"]
+            assert isinstance(entries, list)
+            return any(not self._is_worklog_synced(e["row"]) for e in entries)
 
-            is_off_ticket = ticket == "OFF"
+        # Tickets with pending rows first, then most recent activity first.
+        ordered = sorted(grouped.items(), key=latest_date, reverse=True)
+        ordered.sort(key=lambda item: 0 if has_pending(item) else 1)
+        for ticket, bundle in ordered:
+            self._render_ticket_card(ticket, bundle)
 
-            if not is_off_ticket:
-                tk.Button(
-                    ticket_actions,
-                    text="Open ticket",
-                    font=("Segoe UI", 9),
-                    bg="#3a3a40",
-                    fg="#f4f4f6",
-                    activebackground="#4a4a50",
-                    activeforeground="#ffffff",
-                    relief="flat",
-                    padx=8,
-                    pady=3,
-                    command=lambda ticket_code=ticket: self._open_ticket_for_row(ticket_code),
-                ).pack(side="left", padx=(0, 4))
+        if len(filtered) == len(month_rows):
+            footer_text = f"{len(month_rows)} righe in {month_label_it} · tutte visibili"
+        else:
+            footer_text = f"{len(filtered)} di {len(month_rows)} righe in {month_label_it} · filtri attivi"
+        label(self.worklog_rows, footer_text, kind="subtle", bg=C["bg_app"]).pack(pady=(4, 16))
 
-            tk.Button(
-                ticket_actions,
-                text="Copy description",
-                font=("Segoe UI", 9),
-                bg="#3a3a40",
-                fg="#f4f4f6",
-                activebackground="#4a4a50",
-                activeforeground="#ffffff",
-                relief="flat",
-                padx=8,
-                pady=3,
-                command=lambda text=bundle["description"]: self._copy_text_direct(text),
-            ).pack(side="left")
+        if canvas is not None:
+            self.update_idletasks()
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.yview_moveto(scroll_position)
 
-            tk.Button(
-                ticket_actions,
-                text="Edit description",
-                font=("Segoe UI", 9),
-                bg="#3a3a40",
-                fg="#f4f4f6",
-                activebackground="#4a4a50",
-                activeforeground="#ffffff",
-                relief="flat",
-                padx=8,
-                pady=3,
-                command=lambda ticket_code=ticket: self._open_edit_description_window(ticket_code),
-            ).pack(side="left", padx=(4, 0))
+    def _toggle_ticket(self, ticket: str, expanded: bool) -> None:
+        self.expanded_tickets[ticket] = expanded
+        self._render_worklogs()
 
-            tk.Button(
-                ticket_actions,
-                text="API sync off" if is_off_ticket else "API sync ticket",
-                font=("Segoe UI", 9),
-                bg="#3a3a40",
-                fg="#f4f4f6",
-                activebackground="#4a4a50",
-                activeforeground="#ffffff",
-                relief="flat",
-                padx=8,
-                pady=3,
-                command=lambda ticket_code=ticket: self._sync_ticket_worklogs(ticket_code),
-            ).pack(side="left", padx=(4, 0))
+    def _configure_row_grid(self, frame: tk.Frame) -> None:
+        # Every row is its own grid: minsizes larger than any content keep columns aligned.
+        frame.columnconfigure(0, minsize=100)
+        frame.columnconfigure(1, minsize=72)
+        frame.columnconfigure(2, weight=1)
+        frame.columnconfigure(3, minsize=230)
+        frame.columnconfigure(4, minsize=250)
 
-            pending_count = sum(1 for entry in bundle["entries"] if not self._is_worklog_synced(entry["row"]))
-            synced_count = sum(1 for entry in bundle["entries"] if self._is_worklog_synced(entry["row"]))
-            tk.Label(
-                title_block,
-                text=f"API synced: {synced_count} | Pending: {pending_count}",
-                font=("Segoe UI", 9),
-                fg="#8fd18a" if pending_count == 0 else "#d8c27a",
-                bg="#171a20",
-            ).pack(anchor="w", pady=(4, 0))
+    def _render_ticket_card(self, ticket: str, bundle: dict[str, object]) -> None:
+        surface = C["surface"]
+        entries = bundle["entries"]
+        assert isinstance(entries, list)
+        entries = sorted(entries, key=lambda e: str(e["row"].get("log_date", "")), reverse=True)
+        pending_count = sum(1 for e in entries if not self._is_worklog_synced(e["row"]))
+        total_hours = sum(self._hours_from_worklog_row(e["row"]) for e in entries)
+        is_off = ticket == "OFF"
+        is_qx = ticket == "QXSUPPORT"
+        searching = bool(self.search_var.get().strip())
+        expanded = True if searching else self.expanded_tickets.get(ticket, pending_count > 0)
 
-            header = tk.Frame(card, bg="#171a20")
-            header.pack(fill="x", padx=10, pady=(4, 0))
-            tk.Label(header, text="Working time", font=("Segoe UI", 10, "bold"), fg="#f4f4f6", bg="#171a20", width=14, anchor="w").pack(side="left")
-            tk.Label(header, text="Month", font=("Segoe UI", 10, "bold"), fg="#f4f4f6", bg="#171a20", width=14, anchor="w").pack(side="left")
-            tk.Label(header, text="Work log", font=("Segoe UI", 10, "bold"), fg="#f4f4f6", bg="#171a20", anchor="w").pack(side="left", fill="x", expand=True)
+        card = tk.Frame(self.worklog_rows, bg=surface, highlightthickness=1, highlightbackground=C["border"])
+        card.pack(fill="x", pady=(0, 10))
 
-            divider = tk.Frame(card, bg="#ff6a00", height=1)
-            divider.pack(fill="x", padx=10, pady=(6, 8))
+        head = tk.Frame(card, bg=surface, padx=8, pady=8)
+        head.pack(fill="x")
+        head.columnconfigure(2, weight=1)
 
-            for entry in bundle["entries"]:
-                row = entry["row"]
-                row_frame = tk.Frame(card, bg="#171a20")
-                row_frame.pack(fill="x", padx=10, pady=(0, 6))
+        toggle = lambda t=ticket, e=expanded: self._toggle_ticket(t, not e)  # noqa: E731
+        icon_button(
+            head,
+            "chev_down" if expanded else "chev_right",
+            toggle,
+            parent_bg=surface,
+            tooltip="Comprimi" if expanded else "Espandi",
+        ).grid(row=0, column=0)
+        code_label = tk.Label(head, text=ticket, font=F["ticket"], fg=C["text"], bg=surface, cursor="hand2")
+        code_label.grid(row=0, column=1, padx=(4, 12), sticky="w")
+        code_label.bind("<Button-1>", lambda _e: toggle())
 
-                row_actions = tk.Frame(row_frame, bg="#171a20")
-                row_actions.pack(side="right")
+        description = str(bundle["description"] or "")
+        if is_off:
+            description = "Extra Off · Ferie / Malattia / Permessi"
+        description = description or "Nessuna descrizione"
+        desc_label = tk.Label(head, text=description, font=F["body"], fg=C["muted"], bg=surface, anchor="w", width=1)
+        desc_label.grid(row=0, column=2, sticky="ew")
+        if len(description) > 60:
+            Tooltip(desc_label, description)
 
-                tk.Button(
-                    row_actions,
-                    text="Copy work log",
-                    font=("Segoe UI", 9),
-                    bg="#3a3a40",
-                    fg="#f4f4f6",
-                    activebackground="#4a4a50",
-                    activeforeground="#ffffff",
-                    relief="flat",
-                    padx=8,
-                    pady=3,
-                    command=lambda text=entry["work_log"]: self._copy_text_direct(text),
-                ).pack(side="left", padx=(0, 4))
+        row_word = "riga" if len(entries) == 1 else "righe"
+        label(head, f"{len(entries)} {row_word}", kind="subtle", bg=surface).grid(row=0, column=3, padx=12)
+        tk.Label(head, text=self._format_hours(total_hours), font=F["subtitle"], fg=C["text"], bg=surface).grid(row=0, column=4, padx=(0, 12))
+        if pending_count:
+            pill(head, f"{pending_count} da sincronizzare", "pending").grid(row=0, column=5)
+            sync_btn = button(
+                head,
+                "Sincronizza",
+                lambda t=ticket: self._sync_ticket_worklogs(t),
+                variant="outline",
+                size="sm",
+                parent_bg=surface,
+                bold=True,
+            )
+            if self.jobs.running:
+                sync_btn.configure(state="disabled", highlightbackground=C["border"])
+            sync_btn.grid(row=0, column=6, padx=(12, 0))
+        else:
+            pill(head, "Tutte sincronizzate", "synced").grid(row=0, column=5)
+        if not is_off and not is_qx:
+            icon_button(head, "open", lambda t=ticket: self._open_ticket_for_row(t), parent_bg=surface, tooltip="Apri ticket nel portale").grid(row=0, column=7, padx=(8, 0))
+        more_btn = icon_button(head, "more", None, parent_bg=surface, tooltip="Altre azioni")
+        more_btn.configure(command=lambda b=more_btn, t=ticket, d=description, p=pending_count, o=is_off or is_qx: self._show_ticket_menu(b, t, d, p, o))
+        more_btn.grid(row=0, column=8, padx=(2, 0))
 
-                tk.Button(
-                    row_actions,
-                    text="Copy working time",
-                    font=("Segoe UI", 9),
-                    bg="#3a3a40",
-                    fg="#f4f4f6",
-                    activebackground="#4a4a50",
-                    activeforeground="#ffffff",
-                    relief="flat",
-                    padx=8,
-                    pady=3,
-                    command=lambda text=row["working_time"]: self._copy_text_direct(text),
-                ).pack(side="left", padx=(0, 4))
+        if not expanded:
+            return
 
-                tk.Button(
-                    row_actions,
-                    text="Remove",
-                    font=("Segoe UI", 9),
-                    bg="#3a3a40",
-                    fg="#f4f4f6",
-                    activebackground="#4a4a50",
-                    activeforeground="#ffffff",
-                    relief="flat",
-                    padx=8,
-                    pady=3,
-                    command=lambda i=entry["index"]: self._remove_worklog(i),
-                ).pack(side="left")
+        divider(card).pack(fill="x")
+        header = tk.Frame(card, bg=surface, padx=12, pady=6)
+        header.pack(fill="x")
+        self._configure_row_grid(header)
+        for column, text in enumerate(("DATA", "ORE", "WORK LOG", "STATO", "AZIONI")):
+            tk.Label(header, text=text, font=F["caption"], fg=C["subtle"], bg=surface).grid(
+                row=0, column=column, sticky="e" if column == 4 else "w", padx=(32 if column == 0 else 0, 0)
+            )
 
-                synced = self._is_worklog_synced(row)
-                status_text = self._format_sync_status(row)
-                tk.Label(
-                    row_actions,
-                    text=status_text,
-                    font=("Segoe UI", 9, "bold"),
-                    fg="#8fd18a" if synced else "#d8c27a",
-                    bg="#171a20",
-                    padx=6,
-                ).pack(side="left", padx=(8, 4))
+        for entry_item in entries:
+            self._render_worklog_row(card, entry_item)
 
-                if not synced:
-                    tk.Button(
-                        row_actions,
-                        text="API update log",
-                        font=("Segoe UI", 9),
-                        bg="#3a3a40",
-                        fg="#f4f4f6",
-                        activebackground="#4a4a50",
-                        activeforeground="#ffffff",
-                        relief="flat",
-                        padx=8,
-                        pady=3,
-                        command=lambda i=entry["index"]: self._sync_single_worklog(i),
-                    ).pack(side="left", padx=(0, 4))
+    def _render_worklog_row(self, card: tk.Frame, entry_item: dict[str, object]) -> None:
+        row = entry_item["row"]
+        assert isinstance(row, dict)
+        index = entry_item["index"]
+        assert isinstance(index, int)
+        synced = self._is_worklog_synced(row)
+        normal_bg = C["surface"] if synced else C["pending_row"]
 
-                tk.Button(
-                    row_actions,
-                    text="Edit log",
-                    font=("Segoe UI", 9),
-                    bg="#3a3a40",
-                    fg="#f4f4f6",
-                    activebackground="#4a4a50",
-                    activeforeground="#ffffff",
-                    relief="flat",
-                    padx=8,
-                    pady=3,
-                    command=lambda i=entry["index"]: self._open_edit_log_window(i),
-                ).pack(side="left", padx=(4, 0))
+        tk.Frame(card, bg=C["raised"], height=1).pack(fill="x")
+        line = tk.Frame(card, bg=normal_bg, padx=12, pady=4)
+        line.pack(fill="x")
+        self._configure_row_grid(line)
+        current_bg = lambda: line.cget("bg")  # noqa: E731
 
-                tk.Label(row_frame, text=row["working_time"], font=("Segoe UI", 10), fg="#e7e7ee", bg="#171a20", width=14, anchor="w").pack(side="left")
-                tk.Label(row_frame, text=row["month"], font=("Segoe UI", 10), fg="#e7e7ee", bg="#171a20", width=14, anchor="w").pack(side="left")
-                tk.Label(row_frame, text=entry["work_log"], font=("Segoe UI", 10), fg="#e7e7ee", bg="#171a20", anchor="w").pack(side="left", fill="x", expand=True)
+        recolor: list[tk.Widget] = [line]
+        date_label = label(line, self._format_row_date(row), kind="muted", bg=normal_bg)
+        date_label.grid(row=0, column=0, sticky="w", padx=(32, 0))
+        hours_label = tk.Label(line, text=str(row.get("working_time", "")), font=F["body_bold"], fg=C["text"], bg=normal_bg)
+        hours_label.grid(row=0, column=1, sticky="w")
+
+        work_log = str(entry_item["work_log"] or "")
+        if self._is_off_entry(row):
+            off_label = OFF_TYPE_LABELS.get(str(row.get("off_type", "")), str(row.get("off_type", "")) or "Extra Off")
+            work_log = off_label if not work_log or work_log.lower() == off_label.lower() else f"{off_label} · {work_log}"
+        shown = work_log if len(work_log) <= 200 else work_log[:197] + "…"
+        log_label = tk.Label(line, text=shown or "—", font=F["body"], fg=C["text"], bg=normal_bg, anchor="w", width=1)
+        log_label.grid(row=0, column=2, sticky="ew", padx=(0, 12))
+        if len(work_log) > 70:
+            Tooltip(log_label, work_log)
+
+        status = tk.Frame(line, bg=normal_bg)
+        status.grid(row=0, column=3, sticky="w")
+        in_flight = id(row) in self.rows_in_flight
+        if in_flight:
+            pill(status, "Invio in corso…", "neutral").pack(side="left")
+        else:
+            pill(status, "Sincronizzata" if synced else "Da sincronizzare", "synced" if synced else "pending").pack(side="left")
+        if not synced and str(row.get("api_resend_of", "")).strip() and not in_flight:
+            resend_mark = label(status, "rimandata", kind="subtle", bg=normal_bg)
+            resend_mark.pack(side="left", padx=(8, 0))
+            Tooltip(resend_mark, "Era già sul portale ed è stata modificata: prima di inviarla cancella la voce vecchia dal web.")
+            recolor.append(resend_mark)
+        recolor += [date_label, hours_label, log_label, status]
+        if synced:
+            stamp = label(status, self._short_sync_stamp(row), kind="subtle", bg=normal_bg)
+            stamp.pack(side="left", padx=(8, 0))
+            recolor.append(stamp)
+
+        actions = tk.Frame(line, bg=normal_bg)
+        actions.grid(row=0, column=4, sticky="e")
+        recolor.append(actions)
+        if not synced:
+            send_btn = button(actions, "Invia", lambda i=index: self._sync_single_worklog(i), variant="link", size="sm", parent_bg=normal_bg, bold=True)
+            if self.jobs.running:
+                send_btn.configure(state="disabled")
+            send_btn.pack(side="left", padx=(0, 4))
+            recolor.append(send_btn)
+        copy_btn = icon_button(
+            actions,
+            "copy",
+            lambda text=str(entry_item["work_log"]): self._copy_with_toast(text, "Work log copiato"),
+            parent_bg=normal_bg,
+            tooltip="Copia work log",
+            base_bg=current_bg,
+        )
+        copy_btn.pack(side="left")
+        edit_btn = icon_button(actions, "edit", lambda i=index: self._open_edit_log_window(i), parent_bg=normal_bg, tooltip="Modifica riga", base_bg=current_bg)
+        edit_btn.pack(side="left")
+        more_btn = icon_button(actions, "more", None, parent_bg=normal_bg, tooltip="Altre azioni", base_bg=current_bg)
+        more_btn.configure(command=lambda b=more_btn, i=index, r=row, s=synced, w=str(entry_item["work_log"]): self._show_row_menu(b, i, r, s, w))
+        more_btn.pack(side="left")
+        recolor += [copy_btn, edit_btn, more_btn]
+
+        def set_bg(color: str) -> None:
+            for widget in recolor:
+                try:
+                    widget.configure(bg=color)
+                    if isinstance(widget, tk.Button):
+                        widget.configure(activebackground=C["border_strong"])
+                except tk.TclError:
+                    pass
+
+        def on_enter(_e: tk.Event) -> None:
+            set_bg(C["hover"])
+
+        def on_leave(_e: tk.Event) -> None:
+            try:
+                under = line.winfo_containing(*line.winfo_pointerxy())
+            except (tk.TclError, KeyError):
+                under = None
+            if under is not None and str(under).startswith(str(line)):
+                return
+            set_bg(normal_bg)
+
+        line.bind("<Enter>", on_enter, add="+")
+        line.bind("<Leave>", on_leave, add="+")
+
+    def _show_ticket_menu(self, anchor: tk.Widget, ticket: str, description: str, pending_count: int, is_special: bool) -> None:
+        ticket_menu = DarkMenu(self)
+        if not is_special:
+            ticket_menu.add_command("Apri ticket nel portale", lambda: self._open_ticket_for_row(ticket))
+        ticket_menu.add_command("Copia codice ticket", lambda: self._copy_with_toast(ticket, f"{ticket} copiato"))
+        ticket_menu.add_command("Copia descrizione", lambda: self._copy_with_toast(description, "Descrizione copiata"))
+        ticket_menu.add_command("Modifica descrizione…", lambda: self._open_edit_description_window(ticket))
+        if pending_count:
+            ticket_menu.add_separator()
+            ticket_menu.add_command(
+                f"Sincronizza {pending_count} {'riga' if pending_count == 1 else 'righe'}",
+                lambda: self._sync_ticket_worklogs(ticket),
+                disabled=self.jobs.running,
+            )
+        ticket_menu.popup_below(anchor, align_right=True)
+
+    def _show_row_menu(self, anchor: tk.Widget, index: int, row: dict[str, str], synced: bool, work_log: str) -> None:
+        in_flight = id(row) in self.rows_in_flight
+        row_menu = DarkMenu(self)
+        row_menu.add_command("Copia ore", lambda: self._copy_with_toast(str(row.get("working_time", "")), "Ore copiate"))
+        row_menu.add_command("Copia work log", lambda: self._copy_with_toast(work_log, "Work log copiato"))
+        row_menu.add_command("Modifica riga…", lambda: self._open_edit_log_window(index), disabled=in_flight)
+        if not synced:
+            row_menu.add_command("Invia al portale", lambda: self._sync_single_worklog(index), disabled=self.jobs.running)
+        row_menu.add_separator()
+        row_menu.add_command("Rimuovi riga…", lambda: self._remove_worklog(index), danger=True, disabled=in_flight)
+        row_menu.popup_below(anchor, align_right=True)
 
     def _open_ticket_for_row(self, ticket: str) -> None:
         ticket_code = self._normalize_ticket_code(ticket)
@@ -1377,14 +1681,15 @@ class LoginWindow(tk.Tk):
                 task_id = get_clockify_task_id("Annual Leave")
                 today = datetime.now().date().isoformat()
                 date_variants = self._extra_hours_date_variants(today)
+                # Same verified shape used by the dashboard sync (see docs/extra-off-api.md).
+                # An empty uuid is replaced with a fresh GUID from /api/tickets/newguid on send.
                 template = {
                     "uuid": "",
-                    "Type": "Annual Leave",
-                    "IdClockifyTask": task_id,
-                    "Hours": payload_hours,
+                    "id_clockify_task": task_id,
+                    "hours": payload_hours,
                     "log_date_start": date_variants["it_date"],
                     "log_date_end": date_variants["it_date"],
-                    "Description": comment_value,
+                    "description": comment_value,
                 }
             elif endpoint_path in {"/api/extrahours/clockify_tasks", "/api/extrahours/clockify_users"}:
                 template = {}
@@ -1481,6 +1786,16 @@ class LoginWindow(tk.Tk):
                 payload_text.delete("1.0", "end")
                 payload_text.insert("1.0", json.dumps(payload, indent=2, ensure_ascii=False))
 
+            if endpoint_path == "/api/extrahours/add" and payload is not None and not str(payload.get("uuid", "")).strip():
+                try:
+                    payload["uuid"] = self._request_extra_hours_guid(self.api_token)
+                except Exception as exc:  # noqa: BLE001 - without a GUID the entry would not show in Monthly Report
+                    status_var.set("GUID request failed")
+                    messagebox.showerror("GUID request failed", str(exc))
+                    return
+                payload_text.delete("1.0", "end")
+                payload_text.insert("1.0", json.dumps(payload, indent=2, ensure_ascii=False))
+
             method = "POST"
             if endpoint_path in {"/api/extrahours/clockify_tasks", "/api/extrahours/clockify_users"}:
                 method = "GET"
@@ -1515,7 +1830,13 @@ class LoginWindow(tk.Tk):
                 elif endpoint_path == "/api/extrahours/add":
                     off_type = "Annual Leave"
                     if payload is not None:
-                        off_type = str(payload.get("Type") or payload.get("type") or off_type)
+                        task_names = {task_id: name for name, task_id in get_clockify_tasks().items()}
+                        off_type = str(
+                            payload.get("Type")
+                            or payload.get("type")
+                            or task_names.get(str(payload.get("id_clockify_task", "")))
+                            or off_type
+                        )
                     saved = self._append_worklog_entry_with_status(
                         "OFF",
                         working_time_entry.get().strip(),
@@ -1657,22 +1978,117 @@ class LoginWindow(tk.Tk):
     def _get_summary_month(self) -> str:
         return self._get_dashboard_month()
 
-    def _refresh_summary(self) -> None:
-        target_month = self._get_summary_month()
+    def _compute_month_summary(self, target_month: str) -> dict[str, object]:
+        """Totals for one month label ("October 2026"). Same rules as the old summary bar."""
         month_rows = [row for row in self.work_logs if str(row.get("month", "")) == target_month]
         local_total = sum(self._hours_from_worklog_row(row) for row in month_rows)
-        synced_total = sum(self._hours_from_worklog_row(row) for row in month_rows if self._is_api_syncable(row) and self._is_worklog_synced(row))
-        pending_total = sum(self._hours_from_worklog_row(row) for row in month_rows if self._is_api_syncable(row) and not self._is_worklog_synced(row))
-        off_total = sum(self._hours_from_worklog_row(row) for row in month_rows if self._is_off_entry(row))
+        synced_rows = [row for row in month_rows if self._is_api_syncable(row) and self._is_worklog_synced(row)]
+        pending_rows = [row for row in month_rows if self._is_api_syncable(row) and not self._is_worklog_synced(row)]
+        off_rows = [row for row in month_rows if self._is_off_entry(row)]
+        work_rows = [row for row in month_rows if not self._is_off_entry(row)]
+        synced_total = sum(self._hours_from_worklog_row(row) for row in synced_rows)
+        pending_total = sum(self._hours_from_worklog_row(row) for row in pending_rows)
+        off_total = sum(self._hours_from_worklog_row(row) for row in off_rows)
         target_total = self._expected_month_hours(target_month)
         missing_total = max(target_total - local_total, 0.0)
-        verification = "OK" if abs(local_total - target_total) < 1e-9 else "CHECK"
-        view_names = {0: "Current Month", -1: "Previous Month", -2: "Two Months Ago"}
-        view_name = view_names.get(self.selected_month_offset, f"{self.selected_month_offset} Months Ago")
-        self.month_view_var.set(f"View: {view_name} ({target_month})")
+        return {
+            "rows": month_rows,
+            "local_total": local_total,
+            "work_total": local_total - off_total,
+            "off_total": off_total,
+            "synced_total": synced_total,
+            "pending_total": pending_total,
+            "target_total": target_total,
+            "missing_total": missing_total,
+            "over_total": max(local_total - target_total, 0.0),
+            "verification": "OK" if abs(local_total - target_total) < 1e-9 else "CHECK",
+            "business_days": int(round(target_total / 8)) if target_total else 0,
+            "work_rows": len(work_rows),
+            "work_tickets": len({str(row.get("ticket", "")) for row in work_rows}),
+            "synced_rows": len(synced_rows),
+            "pending_rows": len(pending_rows),
+            "pending_tickets": len({str(row.get("ticket", "")) for row in pending_rows}),
+        }
+
+    def _refresh_summary(self) -> dict[str, object]:
+        target_month = self._get_summary_month()
+        s = self._compute_month_summary(target_month)
+        local_total = float(s["local_total"])
+        target_total = float(s["target_total"])
+        synced_total = float(s["synced_total"])
+        pending_total = float(s["pending_total"])
+        off_total = float(s["off_total"])
+        missing_total = float(s["missing_total"])
+        over_total = float(s["over_total"])
+        verification = str(s["verification"])
+
+        self.month_view_var.set(self._month_label_it(self.selected_month_offset))
         self.summary_var.set(
             f"{target_month}  Total: {target_total:g}h ({verification})  Local: {local_total:g}h  Extra Off: {off_total:g}h  API synced: {synced_total:g}h  Pending: {pending_total:g}h  Missing: {missing_total:g}h"
         )
+
+        if not self.kpi_labels:
+            return s
+
+        def set_kpi(key: str, value: str, sub: str) -> None:
+            value_label, sub_label = self.kpi_labels[key]
+            value_label.configure(text=value)
+            sub_label.configure(text=sub)
+
+        def rows_word(count: int) -> str:
+            return "riga" if count == 1 else "righe"
+
+        set_kpi("target", f"{target_total:g}h", f"{s['business_days']} giorni lavorativi × 8h")
+        set_kpi("work", f"{float(s['work_total']):g}h", f"{s['work_rows']} {rows_word(int(s['work_rows']))} su {s['work_tickets']} ticket")
+        off_days = off_total / 8
+        set_kpi("off", f"{off_total:g}h", f"{off_days:g} {'giorno' if off_days == 1 else 'giorni'}" if off_total else "nessuna assenza")
+        set_kpi("synced", f"{synced_total:g}h", f"{s['synced_rows']} {rows_word(int(s['synced_rows']))}")
+        if pending_total:
+            set_kpi("pending", f"{pending_total:g}h", f"{s['pending_rows']} {rows_word(int(s['pending_rows']))} su {s['pending_tickets']} ticket")
+        else:
+            set_kpi("pending", "0h", "tutto inviato")
+        if missing_total:
+            days, hours = divmod(missing_total, 8)
+            sub = f"≈ {days:g} giorni e {hours:g}h" if days and hours else (f"{days:g} giorni" if days else f"{hours:g}h")
+            set_kpi("missing", f"{missing_total:g}h", sub)
+        elif over_total:
+            set_kpi("missing", "0h", f"+{over_total:g}h oltre il target")
+        else:
+            set_kpi("missing", "0h", "mese completo")
+
+        if verification == "OK":
+            self.status_pill.configure(text="OK · mese completo", bg=C["ok_bg"], fg=C["ok"])
+        elif over_total:
+            self.status_pill.configure(text=f"CHECK · +{over_total:g}h oltre il target", bg=C["warn_bg"], fg=C["warn"])
+        else:
+            self.status_pill.configure(text=f"CHECK · mancano {missing_total:g}h", bg=C["warn_bg"], fg=C["warn"])
+
+        scale = max(target_total, local_total, 1.0)
+        self.progress_bar.set_segments([(synced_total / scale, C["ok"]), (pending_total / scale, C["warn"])])
+        self.legend_labels["synced"].configure(text=f"Sincronizzate {synced_total:g}h")
+        self.legend_labels["pending"].configure(text=f"Da sincronizzare {pending_total:g}h")
+        self.legend_labels["missing"].configure(text=f"Mancanti {missing_total:g}h")
+        percent = int(round(local_total / target_total * 100)) if target_total else 0
+        self.progress_total_label.configure(text=f"{local_total:g}h di {target_total:g}h · {percent}%")
+
+        self.month_button.configure(text=self._month_label_it(self.selected_month_offset))
+        self.next_month_btn.configure(state="disabled" if self.selected_month_offset >= 0 else "normal")
+        for child in self.month_tag_slot.winfo_children():
+            child.destroy()
+        if self.selected_month_offset == 0:
+            tk.Label(self.month_tag_slot, text="Mese corrente", font=F["small"], bg=C["surface"], fg=C["muted"], padx=8, pady=3).pack()
+        else:
+            button(self.month_tag_slot, "Torna al mese corrente", lambda: self._set_dashboard_month(0), variant="ghost", size="sm", parent_bg=C["bg_app"]).pack()
+
+        pending_rows = int(s["pending_rows"])
+        if self.jobs.running:
+            self.sync_month_btn.configure(text="Sincronizzazione…", state="disabled")
+        else:
+            self.sync_month_btn.configure(
+                text=f"Sincronizza mese ({pending_rows})" if pending_rows else "Sincronizza mese",
+                state="normal" if pending_rows else "disabled",
+            )
+        return s
 
     def _expected_month_hours(self, month_label: str) -> float:
         try:
@@ -2069,30 +2485,11 @@ class LoginWindow(tk.Tk):
     def _sync_single_worklog(self, index: int) -> None:
         if index < 0 or index >= len(self.work_logs):
             return
-
-        if self._is_worklog_synced(self.work_logs[index]):
-            messagebox.showinfo("API sync", "This log was already synced.")
+        row = self.work_logs[index]
+        if self._is_worklog_synced(row):
+            self._toast("Questa riga è già sincronizzata", "info")
             return
-
-        try:
-            token = self._ensure_api_session()
-            row = self.work_logs[index]
-            if self._is_off_entry(row):
-                synced = self._sync_extra_hours_row(token, row)
-                if not synced:
-                    messagebox.showinfo("API sync", "Extra off sync cancelled.")
-                    return
-            else:
-                resolved_uuid, payload = self._build_api_payload_for_row(row, token)
-                self.api_client.request_json("POST", "/api/working_hours/form", token, payload)
-                self._mark_row_as_synced(row, resolved_uuid, payload["MonthDisplacement"])
-        except Exception as exc:  # noqa: BLE001 - surface remote API failure
-            messagebox.showerror("API sync failed", str(exc))
-            return
-
-        save_work_logs(self.work_logs)
-        self._render_worklogs()
-        messagebox.showinfo("API sync", "Work log synced successfully.")
+        self._start_sync_job([row], str(row.get("ticket", "")))
 
     def _sync_ticket_worklogs(self, ticket_code: str) -> None:
         normalized_ticket = self._normalize_ticket_code(ticket_code)
@@ -2101,7 +2498,7 @@ class LoginWindow(tk.Tk):
             for index, row in enumerate(self.work_logs)
             if str(row.get("ticket", "")) == normalized_ticket and self._is_api_syncable(row) and not self._is_worklog_synced(row)
         ]
-        self._sync_multiple_worklogs(indexes, f"ticket {normalized_ticket}")
+        self._sync_multiple_worklogs(indexes, normalized_ticket)
 
     def _sync_current_month(self) -> None:
         target_month = self._get_summary_month()
@@ -2110,22 +2507,40 @@ class LoginWindow(tk.Tk):
             for index, row in enumerate(self.work_logs)
             if str(row.get("month", "")) == target_month and self._is_api_syncable(row) and not self._is_worklog_synced(row)
         ]
-        self._sync_multiple_worklogs(indexes, f"month {target_month}")
+        self._sync_multiple_worklogs(indexes, self._month_label_it(self.selected_month_offset))
 
     def _import_qxsupport_current_month(self) -> None:
+        if self.jobs.running:
+            self._toast(f"Attendi: {self.jobs.label} in corso", "info")
+            return
         target_month = self._get_summary_month()
-        try:
+        month_it = self._month_label_it(self.selected_month_offset)
+
+        def worker(emit: object, _cancel: object) -> tuple[list[dict[str, str]], float]:
             token = self._ensure_api_session()
-        except Exception as exc:  # noqa: BLE001 - surface login failure
-            messagebox.showerror("QxSupport import failed", str(exc))
-            return
+            return self._fetch_qxsupport_remote_data(token, target_month)
 
-        try:
-            detailed_rows, aggregate_hours = self._fetch_qxsupport_remote_data(token, target_month)
-        except Exception as exc:  # noqa: BLE001 - surface remote fetch failure
-            messagebox.showerror("QxSupport import failed", str(exc))
-            return
+        def on_finish(result: object, error: BaseException | None) -> None:
+            self.toast.hide_progress()
+            self._render_worklogs()
+            if error is not None:
+                self._notify_error("Import QxSupport non riuscito", error)
+                return
+            assert isinstance(result, tuple)
+            detailed_rows, aggregate_hours = result
+            self._apply_qxsupport_import(target_month, month_it, detailed_rows, aggregate_hours)
 
+        self.jobs.start("import QxSupport", worker, on_event=lambda *_: None, on_finish=on_finish)
+        self.toast.progress(f"Import QxSupport di {month_it}…", 0, 1)
+        self._render_worklogs()
+
+    def _apply_qxsupport_import(
+        self,
+        target_month: str,
+        month_it: str,
+        detailed_rows: list[dict[str, str]],
+        aggregate_hours: float,
+    ) -> None:
         added = 0
         skipped = 0
         now_stamp = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -2140,8 +2555,8 @@ class LoginWindow(tk.Tk):
         }
 
         if detailed_rows:
-            for entry in detailed_rows:
-                signature = self._import_signature(target_month, entry["ticket"], entry["working_time"], entry["comment"])
+            for remote_entry in detailed_rows:
+                signature = self._import_signature(target_month, remote_entry["ticket"], remote_entry["working_time"], remote_entry["comment"])
                 if signature in existing_signatures:
                     skipped += 1
                     continue
@@ -2149,18 +2564,18 @@ class LoginWindow(tk.Tk):
                 self.work_logs.insert(
                     0,
                     {
-                        "working_time": entry["working_time"],
+                        "working_time": remote_entry["working_time"],
                         "month": target_month,
-                        "work_log": entry["comment"],
-                        "ticket": entry["ticket"],
-                        "comment": entry["comment"],
-                        "description": entry["description"],
+                        "work_log": remote_entry["comment"],
+                        "ticket": remote_entry["ticket"],
+                        "comment": remote_entry["comment"],
+                        "description": remote_entry["description"],
                         "entry_type": "work",
                         "off_type": "",
-                        "log_date": entry["log_date"],
+                        "log_date": remote_entry["log_date"],
                         "api_synced": "true",
                         "api_synced_at": now_stamp,
-                        "api_ticket_uuid": str(entry.get("api_ticket_uuid", "")),
+                        "api_ticket_uuid": str(remote_entry.get("api_ticket_uuid", "")),
                         "api_month_displacement": self._month_displacement_for_label(target_month),
                     },
                 )
@@ -2194,18 +2609,13 @@ class LoginWindow(tk.Tk):
                 )
                 added += 1
         else:
-            messagebox.showinfo(
-                "QxSupport import",
-                f"No QxSupport hours found for {target_month} from the available API endpoints.",
-            )
+            self._toast(f"Nessuna ora QxSupport trovata per {month_it}", "warning")
             return
 
         save_work_logs(self.work_logs)
         self._render_worklogs()
-        messagebox.showinfo(
-            "QxSupport import",
-            f"Imported {added} rows for {target_month}. Skipped duplicates: {skipped}.",
-        )
+        skipped_text = f" · {skipped} duplicati ignorati" if skipped else ""
+        self._toast(f"QxSupport: importate {added} righe per {month_it}{skipped_text}")
 
     def _fetch_qxsupport_remote_data(self, token: str, month_label: str) -> tuple[list[dict[str, str]], float]:
         displacement = self._month_displacement_for_label(month_label)
@@ -2369,55 +2779,163 @@ class LoginWindow(tk.Tk):
         )
 
     def _sync_multiple_worklogs(self, indexes: list[int], scope_label: str) -> None:
-        if not indexes:
-            messagebox.showinfo("API sync", f"No pending logs for {scope_label}.")
-            return
+        rows = [self.work_logs[index] for index in indexes if 0 <= index < len(self.work_logs)]
+        self._start_sync_job(rows, scope_label)
 
-        try:
-            token = self._ensure_api_session()
-        except Exception as exc:  # noqa: BLE001 - surface login failure
-            messagebox.showerror("API sync failed", str(exc))
-            return
+    # ------------------------------------------------------------------ background sync
+    _SYNC_FIELDS = ("api_synced", "api_synced_at", "api_ticket_uuid", "api_month_displacement")
 
-        synced_count = 0
-        skipped_count = 0
-        failures: list[str] = []
-        for index in indexes:
-            row = self.work_logs[index]
-            if not self._is_api_syncable(row):
-                skipped_count += 1
-                continue
-            if self._is_worklog_synced(row):
-                skipped_count += 1
-                continue
+    def _sync_row_with_portal(self, token: str, row: dict[str, str]) -> None:
+        """Send one row to the portal and mark *that dict* as synced. Runs on the worker thread:
+        it must not touch Tk; it works on a copy of the row."""
+        if self._is_off_entry(row):
+            self._sync_extra_hours_row(token, row)
+            return
+        resolved_uuid, payload = self._build_api_payload_for_row(row, token)
+        self.api_client.request_json("POST", "/api/working_hours/form", token, payload)
+        self._mark_row_as_synced(row, resolved_uuid, payload["MonthDisplacement"])
+
+    def _confirm_resend_rows(self, rows: list[dict[str, str]]) -> list[dict[str, str]] | None:
+        """Rows edited after a previous sync could create duplicates on the portal: ask first.
+        Returns the rows to send, or None to abort."""
+        resend = [row for row in rows if str(row.get("api_resend_of", "")).strip()]
+        if not resend:
+            return rows
+        lines = []
+        for row in resend[:6]:
+            previous = str(row.get("api_resend_of", ""))
             try:
-                if self._is_off_entry(row):
-                    synced = self._sync_extra_hours_row(token, row)
-                    if not synced:
-                        skipped_count += 1
-                        continue
-                else:
-                    resolved_uuid, payload = self._build_api_payload_for_row(row, token)
-                    self.api_client.request_json("POST", "/api/working_hours/form", token, payload)
-                    self._mark_row_as_synced(row, resolved_uuid, payload["MonthDisplacement"])
-                synced_count += 1
-            except Exception as exc:  # noqa: BLE001 - continue remaining rows and summarize errors
-                failures.append(f"{row.get('ticket', '')}: {exc}")
+                previous = datetime.fromisoformat(previous).astimezone().strftime("%d/%m %H:%M")
+            except ValueError:
+                pass
+            lines.append(f"• {row.get('ticket', '')} {self._format_row_date(row)} · {row.get('working_time', '')} (inviata il {previous})")
+        if len(resend) > 6:
+            lines.append(f"• … e altre {len(resend) - 6}")
+        answer = messagebox.askyesnocancel(
+            "Possibili duplicati sul portale",
+            "Queste righe erano già state inviate e poi modificate:\n\n"
+            + "\n".join(lines)
+            + "\n\nIl portale non permette di aggiornarle: un nuovo invio crea una seconda voce.\n"
+            "Hai già cancellato le voci vecchie dal web?\n\n"
+            "Sì = invia anche queste · No = salta queste righe · Annulla = non inviare nulla",
+            icon="warning",
+        )
+        if answer is None:
+            return None
+        if answer:
+            return rows
+        resend_ids = {id(row) for row in resend}
+        return [row for row in rows if id(row) not in resend_ids]
 
-        save_work_logs(self.work_logs)
+    def _start_sync_job(self, rows: list[dict[str, str]], scope_label: str) -> None:
+        if self.jobs.running:
+            self._toast(f"Attendi: {self.jobs.label} in corso", "info")
+            return
+
+        pending = [row for row in rows if self._is_api_syncable(row) and not self._is_worklog_synced(row)]
+        if not pending:
+            self._toast(f"Niente da sincronizzare per {scope_label}", "info")
+            return
+
+        confirmed = self._confirm_resend_rows(pending)
+        if confirmed is None:
+            return
+        if not confirmed:
+            self._toast("Nessuna riga inviata", "info")
+            return
+
+        jobs = [(row, dict(row)) for row in confirmed]
+        total = len(jobs)
+        stats = {"ok": 0, "done": 0, "cancelled": False}
+        failures: list[str] = []
+        self.rows_in_flight = {id(row) for row in confirmed}
+
+        def worker(emit: Callable[[str, object], None], cancel: threading.Event) -> None:
+            token = self._ensure_api_session()
+            for position, (original, copy) in enumerate(jobs):
+                if cancel.is_set():
+                    emit("cancelled", position)
+                    return
+                emit("current", (position, str(copy.get("ticket", ""))))
+                try:
+                    self._sync_row_with_portal(token, copy)
+                    emit("row_ok", (original, copy))
+                except Exception as exc:  # noqa: BLE001 - keep going, report at the end
+                    emit("row_error", (original, f"{copy.get('ticket', '')} {self._format_row_date(copy)}: {exc}"))
+
+        def on_cancel() -> None:
+            self.jobs.cancel()
+            self.toast.progress_cancel_requested()
+
+        def on_event(kind: str, payload: object) -> None:
+            if kind == "current":
+                position, ticket = payload  # type: ignore[misc]
+                self.toast.progress(f"Invio {ticket} · {position + 1} di {total}…", position, total, on_cancel=on_cancel)
+            elif kind == "row_ok":
+                original, copy = payload  # type: ignore[misc]
+                for key in self._SYNC_FIELDS:
+                    original[key] = copy.get(key, "")
+                original["api_resend_of"] = ""
+                self.rows_in_flight.discard(id(original))
+                stats["ok"] += 1
+                stats["done"] += 1
+                if any(item is original for item in self.work_logs):
+                    save_work_logs(self.work_logs)
+                self._schedule_render()
+            elif kind == "row_error":
+                original, message = payload  # type: ignore[misc]
+                self.rows_in_flight.discard(id(original))
+                failures.append(str(message))
+                stats["done"] += 1
+                self._schedule_render()
+            elif kind == "cancelled":
+                stats["cancelled"] = True
+            if self.toast.progress_visible and kind in {"row_ok", "row_error"}:
+                self.toast.progress(f"Sincronizzate {stats['done']} di {total}…", int(stats["done"]), total, on_cancel=on_cancel)
+
+        def on_finish(_result: object, error: BaseException | None) -> None:
+            self.rows_in_flight = set()
+            self.toast.hide_progress()
+            self._render_worklogs()
+            if error is not None:
+                self._notify_error("Login al portale non riuscito", error)
+                return
+            ok = int(stats["ok"])
+            if failures:
+                detail = f"Sincronizzate {ok} righe per {scope_label}. Errori: {len(failures)}\n\n" + "\n".join(failures[:8])
+                if len(failures) == 1 and total == 1:
+                    self._notify_error(f"Sync {scope_label} non riuscito", failures[0])
+                    return
+                self._toast(
+                    f"Sincronizzate {ok} righe, {len(failures)} con errore",
+                    "error",
+                    action_text="Dettagli",
+                    action=lambda: messagebox.showwarning("Sync completato con errori", detail),
+                )
+                return
+            if stats["cancelled"]:
+                self._toast(f"Sync annullato · inviate {ok} di {total} righe", "warning")
+                return
+            if total == 1:
+                row = jobs[0][0]
+                message = f"{row.get('ticket', '')} sincronizzato · {row.get('working_time', '')} inviate"
+            else:
+                message = f"Sincronizzate {ok} righe ({scope_label})"
+            self._toast(message, action_text="Apri report", action=self._open_monthly_report)
+
+        self.jobs.start(f"sync {scope_label}", worker, on_event=on_event, on_finish=on_finish)
+        self.toast.progress(f"Connessione al portale · {total} {'riga' if total == 1 else 'righe'} da inviare…", 0, total, on_cancel=on_cancel)
         self._render_worklogs()
 
-        if failures:
-            messagebox.showwarning(
-                "API sync completed with errors",
-                f"Synced {synced_count} logs for {scope_label}. Skipped already synced: {skipped_count}. Failed: {len(failures)}\n\n" + "\n".join(failures[:5]),
-            )
+    def _confirm_close(self) -> None:
+        if self.jobs.running and not messagebox.askyesno(
+            "Sincronizzazione in corso",
+            f"C'è {self.jobs.label} in corso. Chiudere comunque?\n"
+            "Le righe già confermate restano salvate, quella in invio potrebbe arrivare al portale senza essere segnata qui.",
+            icon="warning",
+        ):
             return
-
-        messagebox.showinfo(
-            "API sync",
-            f"Synced {synced_count} logs for {scope_label}. Skipped already synced: {skipped_count}.",
-        )
+        self.destroy()
 
     def _find_ticket_description(self, ticket: str) -> str:
         ticket_code = self._normalize_ticket_code(ticket)
@@ -2436,10 +2954,11 @@ class LoginWindow(tk.Tk):
 
     def _group_worklogs_by_ticket(self, rows: list[dict[str, str]]) -> dict[str, dict[str, object]]:
         grouped: dict[str, dict[str, object]] = {}
-        for row in rows[:20]:
-            try:
-                index = self.work_logs.index(row)
-            except ValueError:
+        # Index by identity: two rows with identical content must keep distinct indexes.
+        index_by_id = {id(item): position for position, item in enumerate(self.work_logs)}
+        for row in rows:
+            index = index_by_id.get(id(row))
+            if index is None:
                 continue
             ticket = row.get("ticket", "") or "NO-TICKET"
             bucket = grouped.setdefault(
@@ -2468,32 +2987,21 @@ class LoginWindow(tk.Tk):
         if not ticket_code:
             return
 
-        window = tk.Toplevel(self)
-        window.title(f"Edit Description - {ticket_code}")
-        window.geometry("680x320")
-        window.configure(bg="#2b2b30")
-        window.resizable(False, False)
-        window.transient(self)
-        window.grab_set()
-
-        tk.Label(window, text=ticket_code, font=("Segoe UI", 11, "bold"), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(16, 8))
-        text = tk.Text(window, width=78, height=10, font=("Segoe UI", 10), wrap="word")
-        text.pack(anchor="w", padx=20)
+        window = Modal(self, f"Modifica descrizione · {ticket_code}", width=620)
+        field_label(window.body, "Descrizione del ticket").pack(anchor="w", pady=(0, 6))
+        text = text_area(window.body, height=6, width=70)
+        text.pack(fill="x")
         text.insert("1.0", self._find_ticket_description(ticket_code))
+        text.focus_set()
+        label(window.body, "Vale per tutte le righe di questo ticket.", kind="subtle", bg=C["surface"]).pack(anchor="w", pady=(8, 0))
 
-        tk.Button(
-            window,
-            text="Save",
-            font=("Segoe UI", 10, "bold"),
-            bg="#ff6a00",
-            fg="#ffffff",
-            activebackground="#e65f00",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=14,
-            pady=8,
-            command=lambda: self._save_ticket_description(ticket_code, text.get("1.0", "end").strip(), window),
-        ).pack(anchor="e", padx=20, pady=(16, 0))
+        def save() -> None:
+            self._save_ticket_description(ticket_code, text.get("1.0", "end").strip(), window)
+
+        button(window.footer, "Salva", save, variant="primary").pack(side="right")
+        button(window.footer, "Annulla", window.destroy).pack(side="right", padx=(0, 10))
+        window.bind("<Control-Return>", lambda _e: save())
+        window.recenter()
 
     def _save_ticket_description(self, ticket_code: str, description: str, window: tk.Toplevel) -> None:
         for row in self.work_logs:
@@ -2503,84 +3011,154 @@ class LoginWindow(tk.Tk):
         save_work_logs(self.work_logs)
         self._render_worklogs()
         window.destroy()
-        messagebox.showinfo("Saved", "Ticket description updated.")
+        self._toast(f"Descrizione di {ticket_code} aggiornata")
 
     def _open_edit_log_window(self, index: int) -> None:
         if index < 0 or index >= len(self.work_logs):
             return
 
         row = self.work_logs[index]
+        if id(row) in self.rows_in_flight:
+            self._toast("Riga in invio al portale: modificala a sync finito", "info")
+            return
+        was_synced = self._is_worklog_synced(row)
 
-        window = tk.Toplevel(self)
-        window.title("Edit Working Log")
-        window.geometry("620x420")
-        window.configure(bg="#2b2b30")
-        window.resizable(False, False)
-        window.transient(self)
-        window.grab_set()
+        window = Modal(self, f"Modifica riga · {row.get('ticket', '')}", width=620)
+        body = window.body
+        meta = f"{self._format_row_date(row)} · {self._month_label_it_from_label(str(row.get('month', '')))}"
+        label(body, meta, kind="muted", bg=C["surface"]).pack(anchor="w", pady=(0, 12))
 
-        tk.Label(window, text=f"Ticket: {row.get('ticket', '')}", font=("Segoe UI", 11, "bold"), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(16, 6))
-
-        tk.Label(window, text="Working time", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(8, 6))
-        hours_entry = tk.Entry(window, width=14, font=("Segoe UI", 11))
-        hours_entry.pack(anchor="w", padx=20)
+        field_label(body, "Ore", required=True).pack(anchor="w", pady=(0, 6))
+        hours_entry = entry(body, width=14)
+        hours_entry.pack(anchor="w")
         hours_entry.insert(0, row.get("working_time", ""))
 
-        tk.Label(window, text="Work log", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").pack(anchor="w", padx=20, pady=(12, 6))
-        worklog_text = tk.Text(window, width=70, height=8, font=("Segoe UI", 10), wrap="word")
-        worklog_text.pack(anchor="w", padx=20)
+        field_label(body, "Work log", required=True).pack(anchor="w", pady=(14, 6))
+        worklog_text = text_area(body, height=6, width=70)
+        worklog_text.pack(fill="x")
         worklog_text.insert("1.0", self._normalize_work_log(row))
 
-        tk.Button(
-            window,
-            text="Save",
-            font=("Segoe UI", 10, "bold"),
-            bg="#ff6a00",
-            fg="#ffffff",
-            activebackground="#e65f00",
-            activeforeground="#ffffff",
-            relief="flat",
-            padx=14,
-            pady=8,
-            command=lambda: self._save_log_edit(index, hours_entry.get().strip(), worklog_text.get("1.0", "end").strip(), window),
-        ).pack(anchor="e", padx=20, pady=(16, 0))
+        resend_var = tk.StringVar(value="local")
+        if was_synced:
+            field_label(body, "Questa riga è già sul portale").pack(anchor="w", pady=(16, 6))
+            options = tk.Frame(body, bg=C["surface"])
+            options.pack(fill="x")
+            for value, text in (
+                ("local", "Correggi solo qui: resta “Sincronizzata”, il portale non cambia"),
+                ("resend", "Rimanda al portale: torna “Da sincronizzare” (crea una seconda voce)"),
+            ):
+                tk.Radiobutton(
+                    options,
+                    text=text,
+                    value=value,
+                    variable=resend_var,
+                    font=F["body"],
+                    fg=C["text"],
+                    bg=C["surface"],
+                    activebackground=C["surface"],
+                    activeforeground=C["text"],
+                    selectcolor=C["raised"],
+                    highlightthickness=0,
+                    anchor="w",
+                ).pack(fill="x", pady=1)
+            warn = tk.Frame(body, bg=C["warn_bg"], padx=12, pady=8)
+            warn.pack(fill="x", pady=(10, 0))
+            glyph, glyph_font = icon("warning")
+            tk.Label(warn, text=glyph, font=glyph_font, bg=C["warn_bg"], fg=C["warn"]).pack(side="left", anchor="n")
+            tk.Label(
+                warn,
+                text=(
+                    "Il portale non permette di aggiornare una voce già inviata. Se scegli di rimandarla, "
+                    "cancella prima quella vecchia dal web: al momento dell'invio l'app te lo ricorderà."
+                ),
+                font=F["body"],
+                bg=C["warn_bg"],
+                fg=C["warn"],
+                wraplength=520,
+                justify="left",
+            ).pack(side="left", padx=(8, 0))
 
-    def _save_log_edit(self, index: int, hours: str, work_log: str, window: tk.Toplevel) -> None:
+        error_label = tk.Label(body, text="", font=F["body"], bg=C["surface"], fg=C["danger"])
+        error_label.pack(anchor="w", pady=(8, 0))
+
+        def save() -> None:
+            hours_value = hours_entry.get().strip()
+            work_log = worklog_text.get("1.0", "end").strip()
+            if self._parse_working_time(hours_value) is None:
+                error_label.configure(text="Ore non valide. Esempi: 1h, 2.5h, 1d, 1d 4h")
+                return
+            if not work_log:
+                error_label.configure(text="Il work log è obbligatorio.")
+                return
+            resend = (not was_synced) or resend_var.get() == "resend"
+            self._save_log_edit(index, hours_value, work_log, window, resend=resend)
+
+        button(window.footer, "Salva", save, variant="primary").pack(side="right")
+        button(window.footer, "Annulla", window.destroy).pack(side="right", padx=(0, 10))
+        window.bind("<Control-Return>", lambda _e: save())
+        hours_entry.focus_set()
+        window.recenter()
+
+    def _save_log_edit(self, index: int, hours: str, work_log: str, window: tk.Toplevel, *, resend: bool = True) -> None:
         if index < 0 or index >= len(self.work_logs):
             return
 
         parsed = self._parse_working_time(hours)
         if parsed is None:
-            messagebox.showerror("Error", "Working time non valido. Esempi: 1h, 2.5h, 1d, 1d 4h")
+            messagebox.showerror("Errore", "Ore non valide. Esempi: 1h, 2.5h, 1d, 1d 4h", parent=window)
             return
 
         if not work_log:
-            messagebox.showerror("Error", "Work log is required.")
+            messagebox.showerror("Errore", "Il work log è obbligatorio.", parent=window)
             return
 
         working_time_label, _hours = parsed
-        self.work_logs[index]["working_time"] = working_time_label
-        self.work_logs[index]["work_log"] = work_log
-        self.work_logs[index]["comment"] = work_log
-        self.work_logs[index]["api_synced"] = ""
-        self.work_logs[index]["api_synced_at"] = ""
-        self.work_logs[index]["api_ticket_uuid"] = ""
-        self.work_logs[index]["api_month_displacement"] = ""
+        row = self.work_logs[index]
+        was_synced = self._is_worklog_synced(row)
+        row["working_time"] = working_time_label
+        row["work_log"] = work_log
+        row["comment"] = work_log
+
+        if resend:
+            if was_synced:
+                # Remember the previous sync so the next send asks about duplicates.
+                row["api_resend_of"] = str(row.get("api_synced_at", "")) or datetime.now().astimezone().isoformat(timespec="seconds")
+            row["api_synced"] = ""
+            row["api_synced_at"] = ""
+            row["api_ticket_uuid"] = ""
+            row["api_month_displacement"] = ""
 
         save_work_logs(self.work_logs)
         self._render_worklogs()
         window.destroy()
-        messagebox.showinfo("Saved", "Working log updated.")
+        if resend:
+            self._toast("Riga aggiornata · da sincronizzare")
+        else:
+            self._toast("Riga corretta solo in locale · resta sincronizzata")
 
     def _remove_worklog(self, index: int) -> None:
         if index < 0 or index >= len(self.work_logs):
             return
 
+        row = self.work_logs[index]
+        if id(row) in self.rows_in_flight:
+            self._toast("Riga in invio al portale: rimuovila a sync finito", "info")
+            return
+        question = (
+            f"Rimuovere la riga {row.get('ticket', '')} · {row.get('working_time', '')} "
+            f"del {self._format_row_date(row)}?\n\n"
+        )
+        if self._is_worklog_synced(row):
+            question += "La riga è già sul portale: verrà rimossa solo da qui, non dal web."
+        else:
+            question += "La riga non è ancora stata inviata al portale."
+        if not messagebox.askyesno("Rimuovi riga", question, icon="warning"):
+            return
+
         self.work_logs.pop(index)
         save_work_logs(self.work_logs)
         self._render_worklogs()
-
-        messagebox.showinfo("Removed", "Working time log removed.")
+        self._toast("Riga rimossa", "info")
 
 
 def run_app() -> None:

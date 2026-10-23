@@ -1,5 +1,53 @@
 [
   {
+    "working_time": "7h",
+    "month": "October 2026",
+    "work_log": "first project in microchip dev board",
+    "ticket": "QUIX-711",
+    "comment": "first project in microchip dev board",
+    "description": "Industrial FPGA: Second Source Validation",
+    "entry_type": "work",
+    "off_type": "",
+    "log_date": "2026-10-23",
+    "api_synced": "true",
+    "api_synced_at": "2026-10-23T19:42:33+02:00",
+    "api_ticket_uuid": "55C16149-BAE8-40CF-AC24-65260F3D590D",
+    "api_month_displacement": "0",
+    "api_resend_of": ""
+  },
+  {
+    "working_time": "1h",
+    "month": "October 2026",
+    "work_log": "check microchip email",
+    "ticket": "QUIX-711",
+    "comment": "check microchip email",
+    "description": "Industrial FPGA: Second Source Validation",
+    "entry_type": "work",
+    "off_type": "",
+    "log_date": "2026-10-23",
+    "api_synced": "true",
+    "api_synced_at": "2026-10-23T19:42:33+02:00",
+    "api_ticket_uuid": "55C16149-BAE8-40CF-AC24-65260F3D590D",
+    "api_month_displacement": "0",
+    "api_resend_of": ""
+  },
+  {
+    "working_time": "2h",
+    "month": "October 2026",
+    "work_log": "permesso 104",
+    "ticket": "OFF",
+    "comment": "permesso 104",
+    "description": "annual leave",
+    "entry_type": "off",
+    "off_type": "Annual Leave",
+    "log_date": "2026-10-23",
+    "api_synced": "true",
+    "api_synced_at": "2026-10-23T19:40:38+02:00",
+    "api_ticket_uuid": "",
+    "api_month_displacement": "",
+    "api_resend_of": ""
+  },
+  {
     "working_time": "16h",
     "month": "October 2026",
     "work_log": "check schematic first release",
@@ -12,7 +60,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-10-21T19:28:08+02:00",
     "api_ticket_uuid": "5563C35A-ED6E-4839-A7E0-F43BD605B23E",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "16h",
@@ -27,7 +76,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-10-21T19:28:09+02:00",
     "api_ticket_uuid": "E7E7B2A8-AE5F-4ABC-A592-36835B7EBDDD",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "8h",
@@ -42,7 +92,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-10-21T19:28:11+02:00",
     "api_ticket_uuid": "B8DDE35F-A483-4AE1-A7C2-EF3434806C39",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "4h",
@@ -57,7 +108,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-10-14T13:13:39+02:00",
     "api_ticket_uuid": "",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "16h",
@@ -72,7 +124,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-10-14T12:50:12+02:00",
     "api_ticket_uuid": "5563C35A-ED6E-4839-A7E0-F43BD605B23E",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "8h",
@@ -87,7 +140,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-10-07T10:43:05+02:00",
     "api_ticket_uuid": "",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "16h",
@@ -102,7 +156,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-10-06T11:06:09+02:00",
     "api_ticket_uuid": "",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "2h",
@@ -117,7 +172,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-10-06T10:43:46+02:00",
     "api_ticket_uuid": "",
-    "api_month_displacement": ""
+    "api_month_displacement": "",
+    "api_resend_of": ""
   },
   {
     "working_time": "8h",
@@ -132,7 +188,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-10-02T11:54:04+02:00",
     "api_ticket_uuid": "5563C35A-ED6E-4839-A7E0-F43BD605B23E",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "2h",
@@ -147,7 +204,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-10-02T11:52:00+02:00",
     "api_ticket_uuid": "",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "16h",
@@ -162,7 +220,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-29T09:48:47+02:00",
     "api_ticket_uuid": "B8DDE35F-A483-4AE1-A7C2-EF3434806C39",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "16h",
@@ -177,7 +236,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-29T09:47:49+02:00",
     "api_ticket_uuid": "E7E7B2A8-AE5F-4ABC-A592-36835B7EBDDD",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "16h",
@@ -192,7 +252,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-29T09:46:02+02:00",
     "api_ticket_uuid": "79A15CA4-AEA5-48DF-854B-0E45D891BCD7",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "8h",
@@ -207,7 +268,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-29T09:44:17+02:00",
     "api_ticket_uuid": "",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "1h",
@@ -222,7 +284,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-29T09:40:53+02:00",
     "api_ticket_uuid": "",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "3h",
@@ -237,7 +300,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-26T09:09:22+02:00",
     "api_ticket_uuid": "",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "4h",
@@ -252,7 +316,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-26T09:04:38+02:00",
     "api_ticket_uuid": "",
-    "api_month_displacement": ""
+    "api_month_displacement": "",
+    "api_resend_of": ""
   },
   {
     "working_time": "12h",
@@ -267,7 +332,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-21T14:56:42+02:00",
     "api_ticket_uuid": "55C16149-BAE8-40CF-AC24-65260F3D590D",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "16h",
@@ -282,7 +348,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-21T14:56:42+02:00",
     "api_ticket_uuid": "E7E7B2A8-AE5F-4ABC-A592-36835B7EBDDD",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "4h",
@@ -297,7 +364,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-21T14:56:42+02:00",
     "api_ticket_uuid": "",
-    "api_month_displacement": ""
+    "api_month_displacement": "",
+    "api_resend_of": ""
   },
   {
     "working_time": "16h",
@@ -312,7 +380,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-16T22:49:58+02:00",
     "api_ticket_uuid": "B8DDE35F-A483-4AE1-A7C2-EF3434806C39",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "16h",
@@ -327,7 +396,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-16T22:49:58+02:00",
     "api_ticket_uuid": "55C16149-BAE8-40CF-AC24-65260F3D590D",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "8h",
@@ -342,7 +412,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-16T22:49:59+02:00",
     "api_ticket_uuid": "E7E7B2A8-AE5F-4ABC-A592-36835B7EBDDD",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "4h",
@@ -357,7 +428,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-16T22:49:59+02:00",
     "api_ticket_uuid": "82CBD522-85F5-4B24-9CC7-77C032685D58",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "8h",
@@ -372,7 +444,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-16T22:47:06+02:00",
     "api_ticket_uuid": "",
-    "api_month_displacement": ""
+    "api_month_displacement": "",
+    "api_resend_of": ""
   },
   {
     "working_time": "8h",
@@ -387,7 +460,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-07T15:03:49+02:00",
     "api_ticket_uuid": "55C16149-BAE8-40CF-AC24-65260F3D590D",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "8h",
@@ -402,7 +476,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-07T15:03:49+02:00",
     "api_ticket_uuid": "E7E7B2A8-AE5F-4ABC-A592-36835B7EBDDD",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "4h",
@@ -417,7 +492,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-02T12:41:23+02:00",
     "api_ticket_uuid": "",
-    "api_month_displacement": ""
+    "api_month_displacement": "",
+    "api_resend_of": ""
   },
   {
     "working_time": "8h",
@@ -432,7 +508,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-09-02T09:43:00+02:00",
     "api_ticket_uuid": "E7E7B2A8-AE5F-4ABC-A592-36835B7EBDDD",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "18h",
@@ -447,7 +524,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-08-31T14:48:09+02:00",
     "api_ticket_uuid": "897D4D35-DEB5-4B85-A3EC-FE0E6A096104",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "1h",
@@ -462,7 +540,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-08-28T11:57:23+02:00",
     "api_ticket_uuid": "",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "4h",
@@ -477,7 +556,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-08-28T12:20:34+02:00",
     "api_ticket_uuid": "E7E7B2A8-AE5F-4ABC-A592-36835B7EBDDD",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "2h",
@@ -492,7 +572,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-08-28T12:19:24+02:00",
     "api_ticket_uuid": "",
-    "api_month_displacement": ""
+    "api_month_displacement": "",
+    "api_resend_of": ""
   },
   {
     "working_time": "32h",
@@ -507,7 +588,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-08-28T12:20:34+02:00",
     "api_ticket_uuid": "E7E7B2A8-AE5F-4ABC-A592-36835B7EBDDD",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "4h",
@@ -522,7 +604,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-08-19T15:31:34+02:00",
     "api_ticket_uuid": "B8DDE35F-A483-4AE1-A7C2-EF3434806C39",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "96h",
@@ -537,7 +620,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-08-28T12:19:24+02:00",
     "api_ticket_uuid": "",
-    "api_month_displacement": ""
+    "api_month_displacement": "",
+    "api_resend_of": ""
   },
   {
     "working_time": "8h",
@@ -552,7 +636,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-08-19T12:22:14+02:00",
     "api_ticket_uuid": "B8DDE35F-A483-4AE1-A7C2-EF3434806C39",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "3h",
@@ -567,7 +652,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-08-12T13:56:27+02:00",
     "api_ticket_uuid": "",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "42h",
@@ -582,7 +668,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-07-30T11:34:39+02:00",
     "api_ticket_uuid": "",
-    "api_month_displacement": ""
+    "api_month_displacement": "",
+    "api_resend_of": ""
   },
   {
     "working_time": "16h",
@@ -597,7 +684,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-07-28T14:56:33",
     "api_ticket_uuid": "B8DDE35F-A483-4AE1-A7C2-EF3434806C39",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "32h",
@@ -612,7 +700,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-07-28T15:34:06+02:00",
     "api_ticket_uuid": "7859B41C-03E9-411E-B55B-26EEB719F791",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "12h",
@@ -627,7 +716,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-07-28T17:26:34+02:00",
     "api_ticket_uuid": "41327FCC-512A-43BC-AA7F-19641E59DD45",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "16h",
@@ -642,7 +732,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-07-28T15:10:45+02:00",
     "api_ticket_uuid": "55C16149-BAE8-40CF-AC24-65260F3D590D",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "16h",
@@ -657,7 +748,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-07-28T14:57:06",
     "api_ticket_uuid": "B8DDE35F-A483-4AE1-A7C2-EF3434806C39",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "8h",
@@ -672,7 +764,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-07-28T14:57:15",
     "api_ticket_uuid": "B8DDE35F-A483-4AE1-A7C2-EF3434806C39",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "18h",
@@ -687,7 +780,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-07-28T17:29:23+02:00",
     "api_ticket_uuid": "79A15CA4-AEA5-48DF-854B-0E45D891BCD7",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "4h",
@@ -702,7 +796,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-07-28T15:01:25",
     "api_ticket_uuid": "55C16149-BAE8-40CF-AC24-65260F3D590D",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "16h",
@@ -717,7 +812,8 @@
     "api_synced": "true",
     "api_synced_at": "2026-07-28T17:30:20+02:00",
     "api_ticket_uuid": "D36C9161-7150-4C2D-B82C-BE8815E59523",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   },
   {
     "working_time": "4h",
@@ -732,6 +828,7 @@
     "api_synced": "true",
     "api_synced_at": "2026-07-28T17:31:38+02:00",
     "api_ticket_uuid": "82CBD522-85F5-4B24-9CC7-77C032685D58",
-    "api_month_displacement": "0"
+    "api_month_displacement": "0",
+    "api_resend_of": ""
   }
 ]
