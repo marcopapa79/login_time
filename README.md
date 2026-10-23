@@ -40,7 +40,28 @@ or double-click `login_time.bat`.
 
 ## Local data
 `worklogs.json`, `ticket_uuid_cache.json` and `credentials.json` are git-ignored:
-each PC keeps its own copy and Git does not sync them. Back them up yourself.
+Git does not sync them.
+
+### Sharing worklogs between PCs (OneDrive)
+Set `LOGIN_TIME_DATA_DIR` to a synced folder: `worklogs.json` and
+`ticket_uuid_cache.json` are then read/written there. `credentials.json` always stays
+in the project folder. Without the variable the project folder is used.
+
+One-time setup on the PC with the most recent data (app closed):
+
+```powershell
+$dir = "$env:OneDrive\login_time_data"
+New-Item -ItemType Directory -Force $dir | Out-Null
+Copy-Item C:\My_Designs\login_time\worklogs.json, C:\My_Designs\login_time\ticket_uuid_cache.json $dir
+[Environment]::SetEnvironmentVariable("LOGIN_TIME_DATA_DIR", $dir, "User")
+```
+
+On every other PC: wait for OneDrive to download the folder, then run only the
+`SetEnvironmentVariable` line (with that PC's `$dir`). Restart the terminal / Explorer
+before launching the app so the variable is picked up.
+
+Do not keep the app open on two PCs at the same time: OneDrive would create a
+conflict copy of `worklogs.json` instead of merging.
 
 Commit `7c22c14` stopped tracking the two JSON files, so pulling it on a clone
 that still had them deletes them from disk. Restore them with:

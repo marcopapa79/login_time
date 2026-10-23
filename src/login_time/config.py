@@ -12,9 +12,14 @@ DEFAULT_USERNAME = "marco.papa@quixant.com"
 # No default password: it is typed at first login and stored in Windows Credential Manager.
 DEFAULT_PASSWORD = ""
 
-_CREDENTIALS_FILE = Path(__file__).resolve().parents[2] / "credentials.json"
-_WORKLOG_FILE = Path(__file__).resolve().parents[2] / "worklogs.json"
-_TICKET_UUID_CACHE_FILE = Path(__file__).resolve().parents[2] / "ticket_uuid_cache.json"
+_PROJECT_DIR = Path(__file__).resolve().parents[2]
+# Point LOGIN_TIME_DATA_DIR at a synced folder (e.g. OneDrive) to share worklogs between PCs.
+_DATA_DIR_ENV = os.environ.get("LOGIN_TIME_DATA_DIR", "").strip()
+_DATA_DIR = Path(os.path.expandvars(_DATA_DIR_ENV)).expanduser() if _DATA_DIR_ENV else _PROJECT_DIR
+
+_CREDENTIALS_FILE = _PROJECT_DIR / "credentials.json"
+_WORKLOG_FILE = _DATA_DIR / "worklogs.json"
+_TICKET_UUID_CACHE_FILE = _DATA_DIR / "ticket_uuid_cache.json"
 _WRITE_LOCK = threading.Lock()
 
 # Clockify task name -> id mapping used by extra-hours API flows.
@@ -144,6 +149,7 @@ def load_work_logs() -> list[dict[str, str]]:
 def _atomic_write(path: Path, text: str) -> None:
     """Write via a temp file + rename, so a crash mid-write never truncates the file."""
     with _WRITE_LOCK:  # the sync worker thread may save the UUID cache
+        path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_suffix(path.suffix + ".tmp")
         tmp_path.write_text(text, encoding="utf-8")
         os.replace(tmp_path, path)
