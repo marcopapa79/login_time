@@ -38,6 +38,17 @@ or double-click `login_time.bat`.
 - `docs/DESIGN_BRIEF.md` – UI brief and rationale of the technical choices
 - `docs/extra-off-api.md` – verified Extra Off API flow
 
+## Local data
+`worklogs.json`, `ticket_uuid_cache.json` and `credentials.json` are git-ignored:
+each PC keeps its own copy and Git does not sync them. Back them up yourself.
+
+Commit `7c22c14` stopped tracking the two JSON files, so pulling it on a clone
+that still had them deletes them from disk. Restore them with:
+
+```powershell
+git restore --source=7c22c14~1 --worktree -- worklogs.json ticket_uuid_cache.json
+```
+
 ## Tests
 
 ```powershell
