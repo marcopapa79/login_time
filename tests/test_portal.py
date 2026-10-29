@@ -20,6 +20,10 @@ class HelpersTests(unittest.TestCase):
         self.assertEqual(portal_hours("30 m"), 0.5)
         self.assertEqual(portal_hours("0,5h"), 0.5)
         self.assertIsNone(portal_hours(""))
+        self.assertEqual(portal_hours("1 w"), 40)
+        self.assertEqual(portal_hours("2 w 1 d 4 h"), 92)
+        self.assertEqual(portal_hours("1 w 2 d"), 56)
+        self.assertIsNone(portal_hours("1 y"))
 
     def test_html_text_round_trip(self):
         self.assertEqual(html_to_text("<p>Hi&nbsp;Marco,</p><ul><li>one</li><li>two</li></ul>"), "Hi Marco,\n\n• one\n• two")
