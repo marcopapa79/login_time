@@ -137,12 +137,71 @@ class SyncRowTests(unittest.TestCase):
         window._cache_ticket_uuid = lambda *_a: None
         row = {"ticket": "QUIX-707", "entry_type": "work", "api_synced": ""}
 
-        window._sync_row_with_portal("token", row)
+        with mock.patch("login_time.ui.api_log"):
+            window._sync_row_with_portal("token", row)
 
         self.assertEqual(sent[0][1], "/api/working_hours/form")
         self.assertEqual(row["api_synced"], "true")
         self.assertEqual(row["api_ticket_uuid"], "UUID-1")
         self.assertEqual(row["api_month_displacement"], "-1")
+
+
+class TicketResolutionTests(unittest.TestCase):
+    PAYLOAD = {
+        "data": [
+            {"internal_id": "SFTC-33", "uuid": "b83dce9a-1ca0-4f55-9819-90c175a34775"},
+            {"internal_id": "QUIX-707", "uuid": "79a15ca4-aea5-48df-854b-0e45d891bcd7"},
+            {"internal_id": "FABA-33", "uuid": "11111111-2222-3333-4444-555555555555"},
+        ]
+    }
+
+    def client(self, payloads):
+        from login_time.api_client import ApiResponse, QuixantHubClient
+
+        client = QuixantHubClient()
+        calls = iter(payloads)
+        client.request_query = lambda *_a, **_k: ApiResponse(200, next(calls), "")
+        return client
+
+    def test_faba_33_never_resolves_to_sftc_33(self):
+        client = self.client([self.PAYLOAD])
+        uuid, matched, _source = client.resolve_ticket("tok", "FABA-33")
+        self.assertEqual(matched, "FABA-33")
+        self.assertEqual(uuid, "11111111-2222-3333-4444-555555555555")
+
+    def test_exact_match_in_a_later_list_beats_a_number_only_match(self):
+        first = {"data": [{"internal_id": "33", "uuid": "aaaaaaaa-0000-0000-0000-000000000000"}]}
+        second = {"data": [{"internal_id": "FABA-33", "uuid": "bbbbbbbb-0000-0000-0000-000000000000"}]}
+        client = self.client([first, second, {}, {}, {}, {}])
+        self.assertEqual(client.resolve_ticket("tok", "FABA-33")[1], "FABA-33")
+
+    def test_different_prefixes_do_not_match(self):
+        from login_time.api_client import QuixantHubClient
+
+        client = QuixantHubClient()
+        self.assertFalse(client._ticket_matches("SFTC-33", "FABA-33"))
+        self.assertTrue(client._ticket_matches("707", "QUIX-707"))
+        self.assertTrue(client._ticket_matches("quix-707", "QUIX-707"))
+
+    def test_mismatched_code_from_portal_blocks_the_send(self):
+        window = object.__new__(LoginWindow)
+        window.ticket_uuid_cache = {}
+        window.api_client = mock.Mock()
+        window.api_client.resolve_ticket.return_value = ("B83DCE9A-1CA0-4F55-9819-90C175A34775", "SFTC-33", "list2")
+        window._cache_ticket_uuid = mock.Mock()
+        with mock.patch("login_time.ui.api_log"):
+            with self.assertRaises(RuntimeError):
+                window._resolve_ticket_uuid_cached("tok", "FABA-33")
+        window._cache_ticket_uuid.assert_not_called()
+
+
+class ApiLogTests(unittest.TestCase):
+    def test_password_and_token_are_masked(self):
+        from login_time import api_log
+
+        masked = api_log.mask_secrets({"username": "u", "password": "p", "nested": [{"accessToken": "t"}]})
+        self.assertEqual(masked, {"username": "u", "password": "***", "nested": [{"accessToken": "***"}]})
+        self.assertNotIn("secret", api_log._body_text(b"username=u&password=secret"))
 
 
 class DateHelpersTests(unittest.TestCase):

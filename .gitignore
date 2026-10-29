@@ -6,3 +6,4 @@ worklogs.json
 ticket_uuid_cache.json
 .venv/
 *.tmp
+logs/

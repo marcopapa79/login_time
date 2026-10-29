@@ -6,6 +6,8 @@ import re
 from typing import Any
 from urllib import error, parse, request
 
+from . import api_log
+
 
 DEFAULT_BASE_URL = "https://support.quixant.com"
 
@@ -68,9 +70,18 @@ class QuixantHubClient:
         return self._send("GET", path, token=token)
 
     def resolve_ticket_uuid(self, token: str, ticket_reference: str) -> str:
+        return self.resolve_ticket(token, ticket_reference)[0]
+
+    def resolve_ticket(self, token: str, ticket_reference: str) -> tuple[str, str, str]:
+        """Return (uuid, portal internal_id that matched, where it was found).
+
+        An exact code match (FABA-33 == FABA-33) always wins. A digits-only match is
+        accepted only when one of the two codes is a bare number, so FABA-33 can never
+        resolve to SFTC-33 again.
+        """
         normalized_reference = ticket_reference.strip().upper()
         if self._looks_like_uuid(normalized_reference):
-            return normalized_reference
+            return normalized_reference, normalized_reference, "uuid"
 
         candidates = [
             ("/api/tickets/list2", {"closed": False, "archived": False}),
@@ -82,16 +93,24 @@ class QuixantHubClient:
         ]
 
         last_error: Exception | None = None
+        loose_hit: tuple[str, str, str] | None = None
         for path, query in candidates:
             try:
                 response = self.request_query(path, token, query)
             except Exception as exc:  # noqa: BLE001 - keep trying remaining candidates
                 last_error = exc
                 continue
-            resolved = self._find_ticket_uuid(response.payload, normalized_reference)
-            if resolved:
-                return resolved
+            source = f"{path} closed={query['closed']} archived={query['archived']}"
+            exact = self._find_ticket_match(response.payload, normalized_reference, exact=True)
+            if exact:
+                return exact[0], exact[1], source
+            if loose_hit is None:
+                loose = self._find_ticket_match(response.payload, normalized_reference, exact=False)
+                if loose:
+                    loose_hit = (loose[0], loose[1], source + " (solo numero)")
 
+        if loose_hit is not None:
+            return loose_hit
         if last_error is not None:
             raise RuntimeError(
                 f"Unable to resolve ticket '{ticket_reference}' to a UUID via /api/tickets/list: {last_error}"
@@ -128,20 +147,25 @@ class QuixantHubClient:
             headers["Content-Type"] = content_type
 
         request_obj = request.Request(url, data=body, headers=headers, method=method.upper())
+        api_log.request(method.upper(), path, body)
 
         try:
             with request.urlopen(request_obj, timeout=self.timeout) as response:
                 raw_text = response.read().decode("utf-8", errors="replace")
+                api_log.response(path, response.status, raw_text)
                 return ApiResponse(response.status, self._decode_payload(raw_text), raw_text)
         except error.HTTPError as exc:
             raw_text = exc.read().decode("utf-8", errors="replace")
+            api_log.response(path, exc.code, "", error=f"HTTP {exc.code}: {raw_text}")
             raise RuntimeError(f"HTTP {exc.code} calling {path}: {raw_text[:400]}") from exc
         except TimeoutError as exc:
+            api_log.response(path, None, "", error=f"timeout dopo {self.timeout}s")
             raise RuntimeError(
                 f"Timed out after {self.timeout}s waiting for {path}. The endpoint may be returning a large payload; try again."
             ) from exc
         except error.URLError as exc:
             reason = exc.reason
+            api_log.response(path, None, "", error=f"errore di rete: {reason}")
             if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
                 raise RuntimeError(
                     f"Timed out after {self.timeout}s waiting for {path}. The endpoint may be returning a large payload; try again."
@@ -181,30 +205,51 @@ class QuixantHubClient:
         return ""
 
     def _find_ticket_uuid(self, payload: Any, ticket_reference: str) -> str:
+        match = self._find_ticket_match(payload, ticket_reference, exact=True) or self._find_ticket_match(
+            payload, ticket_reference, exact=False
+        )
+        return match[0] if match else ""
+
+    def _find_ticket_match(self, payload: Any, ticket_reference: str, *, exact: bool) -> tuple[str, str] | None:
+        """First (uuid, internal_id) in the payload whose code matches. exact=False allows bare numbers."""
         if isinstance(payload, dict):
             internal_id = payload.get("internal_id") or payload.get("InternalId") or payload.get("ticket") or payload.get("TicketId")
             uuid = payload.get("uuid") or payload.get("UUID")
-            if uuid and internal_id and self._ticket_matches(str(internal_id), ticket_reference):
-                return str(uuid).upper()
+            if uuid and internal_id:
+                candidate = str(internal_id)
+                matched = self._codes_equal(candidate, ticket_reference) if exact else self._ticket_matches(candidate, ticket_reference)
+                if matched:
+                    return str(uuid).upper(), candidate.strip().upper()
 
             for value in payload.values():
-                resolved = self._find_ticket_uuid(value, ticket_reference)
-                if resolved:
-                    return resolved
+                found = self._find_ticket_match(value, ticket_reference, exact=exact)
+                if found:
+                    return found
 
         if isinstance(payload, list):
             for item in payload:
-                resolved = self._find_ticket_uuid(item, ticket_reference)
-                if resolved:
-                    return resolved
+                found = self._find_ticket_match(item, ticket_reference, exact=exact)
+                if found:
+                    return found
 
-        return ""
+        return None
+
+    @staticmethod
+    def _codes_equal(candidate: str, ticket_reference: str) -> bool:
+        return candidate.strip().upper() == ticket_reference.strip().upper()
 
     def _ticket_matches(self, candidate: str, ticket_reference: str) -> bool:
+        """Exact code, or same number when one side is a bare number ("707" vs "QUIX-707").
+        Two codes with different letter prefixes (FABA-33 vs SFTC-33) never match."""
         normalized_candidate = candidate.strip().upper()
         normalized_reference = ticket_reference.strip().upper()
         if normalized_candidate == normalized_reference:
             return True
+
+        candidate_has_letters = bool(re.search(r"[A-Z]", normalized_candidate))
+        reference_has_letters = bool(re.search(r"[A-Z]", normalized_reference))
+        if candidate_has_letters and reference_has_letters:
+            return False
 
         candidate_digits = re.sub(r"\D", "", normalized_candidate)
         reference_digits = re.sub(r"\D", "", normalized_reference)

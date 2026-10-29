@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import calendar
+import os
 from datetime import date, datetime, timedelta
 import re
 import threading
@@ -10,6 +11,7 @@ import webbrowser
 from tkinter import messagebox, ttk
 from typing import Callable
 
+from . import api_log
 from .api_client import QuixantHubClient
 from .config import (
     credentials_storage_label,
@@ -494,10 +496,23 @@ class LoginWindow(tk.Tk):
         profile_menu.add_command("Apri ticket per codice…", self._open_ticket_window)
         profile_menu.add_command("Importa QxSupport del mese", self._import_qxsupport_current_month, disabled=self.jobs.running)
         profile_menu.add_separator()
+        profile_menu.add_command("Apri log API (debug sync)", self._open_api_log)
         profile_menu.add_command("Advanced · API tester", self._open_api_update_window)
         profile_menu.add_separator()
         profile_menu.add_command("Esci", self._logout)
         profile_menu.popup_below(anchor, align_right=True)
+
+    def _open_api_log(self) -> None:
+        log_file = api_log.LOG_FILE
+        if not log_file.exists():
+            api_log.event("log creato")
+        try:
+            if hasattr(os, "startfile"):
+                os.startfile(str(log_file))  # type: ignore[attr-defined]  # Windows: opens in the default editor
+            else:
+                webbrowser.open(log_file.as_uri())
+        except OSError as exc:
+            self._notify_error("Impossibile aprire il log", f"{log_file}\n{exc}")
 
     def _logout(self) -> None:
         if self.jobs.running:
@@ -1494,6 +1509,12 @@ class LoginWindow(tk.Tk):
         ticket_menu.add_command("Copia codice ticket", lambda: self._copy_with_toast(ticket, f"{ticket} copiato"))
         ticket_menu.add_command("Copia descrizione", lambda: self._copy_with_toast(description, "Descrizione copiata"))
         ticket_menu.add_command("Modifica descrizione…", lambda: self._open_edit_description_window(ticket))
+        if not is_special:
+            ticket_menu.add_command(
+                "Ricalcola UUID dal portale",
+                lambda: self._forget_ticket_uuid(ticket),
+                disabled=self.jobs.running,
+            )
         if pending_count:
             ticket_menu.add_separator()
             ticket_menu.add_command(
@@ -1945,16 +1966,35 @@ class LoginWindow(tk.Tk):
     def _resolve_ticket_uuid_cached(self, token: str, ticket_reference: str) -> str:
         normalized_ref = ticket_reference.strip().upper()
         if self._is_uuid(normalized_ref):
+            api_log.event(f"    ticket UUID {normalized_ref} (già salvato sulla riga)")
             return normalized_ref
 
         ticket_code = self._normalize_ticket_code(normalized_ref)
         cached = self.ticket_uuid_cache.get(ticket_code)
         if cached:
+            api_log.event(f"    ticket {ticket_code} → UUID {cached} (dalla cache ticket_uuid_cache.json)")
             return cached
 
-        resolved_uuid = self.api_client.resolve_ticket_uuid(token, ticket_code)
+        api_log.event(f"    ticket {ticket_code}: UUID non in cache, lo cerco nelle liste ticket del portale…")
+        resolved_uuid, matched_code, source = self.api_client.resolve_ticket(token, ticket_code)
+        api_log.event(f"    ticket {ticket_code} → UUID {resolved_uuid} (trovato come {matched_code} in {source})")
+        if re.search(r"[A-Z]", matched_code) and matched_code != ticket_code:
+            # Safety net: never send hours to a ticket with a different code.
+            raise RuntimeError(
+                f"Il portale ha restituito {matched_code} cercando {ticket_code}: invio bloccato per non registrare le ore sul ticket sbagliato."
+            )
         self._cache_ticket_uuid(ticket_code, resolved_uuid)
         return resolved_uuid
+
+    def _forget_ticket_uuid(self, ticket: str) -> None:
+        ticket_code = self._normalize_ticket_code(ticket)
+        removed = self.ticket_uuid_cache.pop(ticket_code, None)
+        if removed is None:
+            self._toast(f"{ticket_code} non era in cache: verrà cercato al prossimo invio", "info")
+            return
+        save_ticket_uuid_cache(self.ticket_uuid_cache)
+        api_log.event(f"cache: rimosso {ticket_code} → {removed} (Ricalcola UUID)")
+        self._toast(f"UUID di {ticket_code} dimenticato: al prossimo invio verrà cercato sul portale (vedi log API)", "info")
 
     def _set_dashboard_month(self, offset: int) -> None:
         self.selected_month_offset = offset
@@ -2283,6 +2323,7 @@ class LoginWindow(tk.Tk):
         if self.api_token and self.api_token_user == username:
             return self.api_token
 
+        api_log.event(f"login portale come {username}")
         token, _payload = self.api_client.login(username, self.credentials["password"])
         self.api_token = token
         self.api_token_user = username
@@ -2788,12 +2829,22 @@ class LoginWindow(tk.Tk):
     def _sync_row_with_portal(self, token: str, row: dict[str, str]) -> None:
         """Send one row to the portal and mark *that dict* as synced. Runs on the worker thread:
         it must not touch Tk; it works on a copy of the row."""
-        if self._is_off_entry(row):
-            self._sync_extra_hours_row(token, row)
-            return
-        resolved_uuid, payload = self._build_api_payload_for_row(row, token)
-        self.api_client.request_json("POST", "/api/working_hours/form", token, payload)
-        self._mark_row_as_synced(row, resolved_uuid, payload["MonthDisplacement"])
+        kind = "Extra Off" if self._is_off_entry(row) else "lavoro"
+        api_log.event(
+            f"SYNC {row.get('ticket', '')} · {row.get('log_date', '')} · {row.get('working_time', '')} · {kind} · "
+            f"mese {row.get('month', '')}"
+        )
+        try:
+            if self._is_off_entry(row):
+                self._sync_extra_hours_row(token, row)
+            else:
+                resolved_uuid, payload = self._build_api_payload_for_row(row, token)
+                self.api_client.request_json("POST", "/api/working_hours/form", token, payload)
+                self._mark_row_as_synced(row, resolved_uuid, payload["MonthDisplacement"])
+        except Exception as exc:
+            api_log.event(f"    ESITO: ERRORE · {exc}")
+            raise
+        api_log.event(f"    ESITO: OK · ticket UUID {row.get('api_ticket_uuid', '') or '-'}")
 
     def _confirm_resend_rows(self, rows: list[dict[str, str]]) -> list[dict[str, str]] | None:
         """Rows edited after a previous sync could create duplicates on the portal: ask first.
@@ -2851,9 +2902,11 @@ class LoginWindow(tk.Tk):
         self.rows_in_flight = {id(row) for row in confirmed}
 
         def worker(emit: Callable[[str, object], None], cancel: threading.Event) -> None:
+            api_log.event(f"=== Sync {scope_label}: {total} {'riga' if total == 1 else 'righe'} ===")
             token = self._ensure_api_session()
             for position, (original, copy) in enumerate(jobs):
                 if cancel.is_set():
+                    api_log.event(f"=== Annullato dall'utente dopo {position} di {total} ===")
                     emit("cancelled", position)
                     return
                 emit("current", (position, str(copy.get("ticket", ""))))
