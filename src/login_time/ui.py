@@ -1824,7 +1824,6 @@ class LoginWindow(tk.Tk):
             links: list[tuple[dict[str, str], str]] = []
             claimed = self._claimed_entry_ids()
             fullname = ""
-            extra_times_hours: float | None = None
             for position, ticket in enumerate(tickets):
                 if cancel.is_set():
                     break
@@ -1858,13 +1857,18 @@ class LoginWindow(tk.Tk):
 
                     times = self.portal.get_times(token, ticket_uuid)
                     total_hours: float | None = None
+                    unreadable = ""
                     for wt in times.get("working_times") or []:
                         if str(wt.get("Month", "")).lower() == month_label.lower() and (not fullname or str(wt.get("FullName", "")) == fullname):
-                            total_hours = (total_hours or 0.0) + (portal_hours(wt.get("WorkingTime")) or 0.0)
-                    if extra_times_hours is None and fullname:
-                        for et in times.get("extra_times") or []:
-                            if str(et.get("Month", "")).lower() == month_label.lower() and str(et.get("FullName", "")) == fullname:
-                                extra_times_hours = (extra_times_hours or 0.0) + (portal_hours(et.get("WorkingTime")) or 0.0)
+                            parsed_total = portal_hours(wt.get("WorkingTime"))
+                            if parsed_total is None:
+                                unreadable = str(wt.get("WorkingTime", ""))
+                                continue
+                            total_hours = (total_hours or 0.0) + parsed_total
+                    if unreadable:
+                        # Never report "0h on the portal" because of a format we cannot read.
+                        api_log.event(f"    {ticket}: totale get_times non leggibile (\"{unreadable}\"), uso la somma delle voci")
+                        total_hours = None
                     portal_total = total_hours if total_hours is not None else entry_hours
                     item.update(
                         portal_total=portal_total,
@@ -1882,7 +1886,7 @@ class LoginWindow(tk.Tk):
                     item["error"] = str(exc)
                     api_log.event(f"    {ticket}: ERRORE · {exc}")
                 results.append(item)
-            return {"results": results, "links": links, "extra_times": extra_times_hours, "cancelled": cancel.is_set()}
+            return {"results": results, "links": links, "cancelled": cancel.is_set()}
 
         def on_cancel() -> None:
             self.jobs.cancel()
@@ -1962,7 +1966,6 @@ class LoginWindow(tk.Tk):
             if len(status) > 70:
                 Tooltip(status_label, status)
 
-        extra = result.get("extra_times")
         off_local = sum(
             self._hours_from_worklog_row(row)
             for row in self.work_logs
@@ -1975,8 +1978,8 @@ class LoginWindow(tk.Tk):
         ]
         if links:
             summary.append(f"Collegate {len(links)} righe alla loro voce sul portale: ora si possono aggiornare o cancellare da qui.")
-        if isinstance(extra, float):
-            summary.append(f"Extra Off: qui {off_local:g}h · sul portale {extra:g}h (dato get_times, da verificare nel Monthly Report).")
+        # Extra Off is not compared: get_times "extra_times" is not the Day Off total of the Monthly Report.
+        summary.append(f"Extra Off non confrontati (qui {off_local:g}h): controllali nel Monthly Report, riga Day Off.")
         if result.get("cancelled"):
             summary.append("Confronto interrotto: alcuni ticket non sono stati controllati.")
         tk.Label(body, text="\n".join(summary), font=F["body"], bg=surface, fg=C["muted"], justify="left", anchor="w", wraplength=700).pack(fill="x", pady=(14, 0))

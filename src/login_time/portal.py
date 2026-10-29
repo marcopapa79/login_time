@@ -25,11 +25,14 @@ from .api_client import QuixantHubClient
 
 # ---------------------------------------------------------------- hours helpers
 
-_HOURS_TOKEN = re.compile(r"(\d+(?:[.,]\d+)?)\s*([dhm])", re.IGNORECASE)
+_HOURS_TOKEN = re.compile(r"(\d+(?:[.,]\d+)?)\s*([wdhm])", re.IGNORECASE)
+# The portal shows totals in weeks too ("1 w", "2 w 1 d 4 h"): 1 w = 5 working days = 40 h.
+_UNIT_HOURS = {"w": 40.0, "d": 8.0, "h": 1.0, "m": 1 / 60}
 
 
 def portal_hours(value: object) -> float | None:
-    """Hours from portal strings like "1 d 1 h", "1d", "8h", "30 m", "0.5h" or a number."""
+    """Hours from portal strings like "1 w", "2 w 1 d 4 h", "1 d 1 h", "8h", "30 m", "0.5h" or a number.
+    Returns None when the text contains something that is not a known unit."""
     if isinstance(value, (int, float)):
         return float(value)
     text = str(value or "").strip().lower()
@@ -37,13 +40,11 @@ def portal_hours(value: object) -> float | None:
         return None
     if re.fullmatch(r"\d+(?:[.,]\d+)?", text):
         return float(text.replace(",", "."))
-    total = 0.0
-    found = False
-    for number, unit in _HOURS_TOKEN.findall(text):
-        amount = float(number.replace(",", "."))
-        found = True
-        total += amount * 8 if unit == "d" else amount / 60 if unit == "m" else amount
-    return total if found else None
+    tokens = _HOURS_TOKEN.findall(text)
+    leftover = _HOURS_TOKEN.sub("", text).strip()
+    if not tokens or leftover:
+        return None
+    return sum(float(number.replace(",", ".")) * _UNIT_HOURS[unit.lower()] for number, unit in tokens)
 
 
 # ---------------------------------------------------------------- text helpers
