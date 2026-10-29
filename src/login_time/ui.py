@@ -64,7 +64,7 @@ ENTRY_TYPES = [
     ("work", "Lavoro"),
     ("off", "Extra Off"),
     ("qxsupport_synced", "QxSupport ✓"),
-    ("ticket_synced", "Ticket ✓"),
+    ("open_ticket", "Apri ticket ↗"),
 ]
 OFF_TYPES = [
     ("Annual Leave", "Ferie"),
@@ -163,6 +163,7 @@ class LoginWindow(tk.Tk):
         self.kpi_labels = {}
         self.filter_buttons = {}
         self.unbind("<Control-n>")
+        self.unbind("<Control-t>")
         self.configure(bg=C["bg_app"])
 
         surface = C["surface"]
@@ -277,6 +278,7 @@ class LoginWindow(tk.Tk):
 
         self.bind_all("<MouseWheel>", self._scroll_rotellina)
         self.bind("<Control-n>", lambda _e: self._open_worklog_window())
+        self.bind("<Control-t>", lambda _e: self._open_ticket_window())
         self._render_worklogs()
 
     def _build_topbar(self, parent: tk.Misc, username: str) -> None:
@@ -313,6 +315,9 @@ class LoginWindow(tk.Tk):
         Tooltip(avatar, "Profilo e strumenti")
 
         button(bar, "Monthly Report ↗", self._open_monthly_report, parent_bg=surface).pack(side="right", padx=(0, 12))
+        open_ticket_btn = button(bar, "Apri ticket…", self._open_ticket_window, parent_bg=surface)
+        open_ticket_btn.pack(side="right", padx=(0, 12))
+        Tooltip(open_ticket_btn, "Apri un ticket qualsiasi nella conversazione (Ctrl+T)")
 
         search_box = tk.Frame(bar, bg=C["raised"], highlightthickness=1, highlightbackground=C["border"])
         search_box.pack(side="right", padx=(0, 12))
@@ -447,7 +452,7 @@ class LoginWindow(tk.Tk):
             )
             btn.pack(side="left", padx=(0, 8))
             self.filter_buttons[value] = btn
-        label(row, "Ctrl+N nuova voce · più recenti in alto", kind="subtle", bg=bg).pack(side="right")
+        label(row, "Ctrl+N nuova voce · Ctrl+T apri ticket · più recenti in alto", kind="subtle", bg=bg).pack(side="right")
 
     def _build_worklog_list(self, parent: tk.Misc) -> None:
         bg = C["bg_app"]
@@ -464,14 +469,22 @@ class LoginWindow(tk.Tk):
         self.worklog_rows = tk.Frame(self.worklog_canvas, bg=bg)
         self.worklog_canvas_window = self.worklog_canvas.create_window((0, 0), window=self.worklog_rows, anchor="nw")
 
-        self.worklog_rows.bind(
-            "<Configure>",
-            lambda _event: self.worklog_canvas.configure(scrollregion=self.worklog_canvas.bbox("all")),
-        )
-        self.worklog_canvas.bind(
-            "<Configure>",
-            lambda event: self.worklog_canvas.itemconfig(self.worklog_canvas_window, width=event.width),
-        )
+        self.worklog_rows.bind("<Configure>", lambda _event: self._fit_scrollregion(self.worklog_canvas))
+
+        def on_canvas_configure(event: tk.Event) -> None:
+            self.worklog_canvas.itemconfig(self.worklog_canvas_window, width=event.width)
+            self._fit_scrollregion(self.worklog_canvas)
+
+        self.worklog_canvas.bind("<Configure>", on_canvas_configure)
+
+    @staticmethod
+    def _fit_scrollregion(canvas: tk.Canvas) -> None:
+        """Scrollregion at least as tall as the view: Tk would otherwise centre short content."""
+        try:
+            bbox = canvas.bbox("all") or (0, 0, 0, 0)
+            canvas.configure(scrollregion=(0, 0, max(bbox[2], canvas.winfo_width()), max(bbox[3], canvas.winfo_height())))
+        except tk.TclError:
+            pass
 
     def _scroll_rotellina(self, event: tk.Event) -> None:
         try:
@@ -495,7 +508,7 @@ class LoginWindow(tk.Tk):
             status = f"{self.jobs.label} in corso"
         profile_menu.add_header(f"Portale: {status}", muted=True)
         profile_menu.add_separator()
-        profile_menu.add_command("Apri ticket per codice…", self._open_ticket_window)
+        profile_menu.add_command("Apri ticket per codice… (Ctrl+T)", self._open_ticket_window)
         profile_menu.add_command("Importa QxSupport del mese", self._import_qxsupport_current_month, disabled=self.jobs.running)
         profile_menu.add_command("Confronta il mese col portale", self._start_portal_compare, disabled=self.jobs.running)
         profile_menu.add_separator()
@@ -575,7 +588,17 @@ class LoginWindow(tk.Tk):
         )
 
     # ------------------------------------------------------------------ open ticket window
+    _TICKET_CODE = re.compile(r"^[A-Z][A-Z0-9]*-\d+$")
+
+    def _clean_ticket_code(self, raw: str) -> str:
+        """'faba-33', 'FABA 33', '707' → 'FABA-33', 'QUIX-707'; "" if it does not look like a ticket code."""
+        value = re.sub(r"\s+", "-", raw.strip().upper())
+        value = value.split("|", 1)[0].strip()
+        code = self._normalize_ticket_code(value)
+        return code if self._TICKET_CODE.match(code) else ""
+
     def _open_ticket_window(self) -> None:
+        """Open any ticket by code, also one with no rows yet: in the app (conversation) or in the browser."""
         window = Modal(self, "Apri ticket", width=520)
         body = window.body
 
@@ -585,20 +608,27 @@ class LoginWindow(tk.Tk):
         ticket_entry.insert(0, "QUIX-")
         ticket_entry.focus_set()
         ticket_entry.icursor("end")
+        label(body, "Es. FABA-33, SFTC-14, QUIX-727 (solo il numero = QUIX).", kind="subtle", bg=C["surface"]).pack(anchor="w", pady=(6, 0))
+        error_label = tk.Label(body, text="", font=F["body"], bg=C["surface"], fg=C["danger"])
+        error_label.pack(anchor="w", pady=(6, 0))
 
-        field_label(body, "Credenziali per il login nel browser").pack(anchor="w", pady=(16, 6))
-        browser_user = entry(body, width=40)
-        browser_user.pack(fill="x")
-        browser_user.insert(0, self.credentials["username"])
-        browser_pass = entry(body, width=40, show="•")
-        browser_pass.pack(fill="x", pady=(8, 0))
-        browser_pass.insert(0, self.credentials["password"])
-        button(
-            body,
-            "Copia credenziali",
-            lambda: self._copy_credentials(browser_user.get().strip(), browser_pass.get().strip()),
-            size="sm",
-        ).pack(anchor="w", pady=(10, 0))
+        def chosen_code() -> str:
+            code = self._clean_ticket_code(ticket_entry.get())
+            if not code:
+                error_label.configure(text="Codice non valido: usa il formato PROGETTO-numero, es. FABA-33.")
+            return code
+
+        def open_here() -> None:
+            code = chosen_code()
+            if code:
+                window.destroy()
+                self._open_ticket_conversation(code, self._find_ticket_description(code))
+
+        def open_browser() -> None:
+            code = chosen_code()
+            if code:
+                window.destroy()
+                self._open_ticket_for_row(code)
 
         button(
             window.footer,
@@ -607,9 +637,9 @@ class LoginWindow(tk.Tk):
             variant="ghost",
             parent_bg=C["surface"],
         ).pack(side="left")
-        button(window.footer, "Apri nel browser", lambda: self._open_ticket_link(ticket_entry.get(), window), variant="primary").pack(side="right")
-        button(window.footer, "Annulla", window.destroy).pack(side="right", padx=(0, 10))
-        ticket_entry.bind("<Return>", lambda _e: self._open_ticket_link(ticket_entry.get(), window))
+        button(window.footer, "Apri qui (conversazione)", open_here, variant="primary").pack(side="right")
+        button(window.footer, "Apri nel browser ↗", open_browser).pack(side="right", padx=(0, 10))
+        ticket_entry.bind("<Return>", lambda _e: open_here())
         window.recenter()
 
     # ------------------------------------------------------------------ new entry modal
@@ -658,9 +688,45 @@ class LoginWindow(tk.Tk):
                 ticket_titles[ticket_code] = title
         ticket_choices = [f"{code} | {ticket_titles[code] or '(senza titolo)'}" for code in sorted(ticket_titles)]
         ticket_choice_codes = {choice: choice.split(" | ", 1)[0] for choice in ticket_choices}
-        ticket_entry = ttk.Combobox(ticket_edit_section, font=(FAMILY, 11), values=ticket_choices)
-        ticket_entry.pack(fill="x")
+        ticket_row = tk.Frame(ticket_edit_section, bg=surface)
+        ticket_row.pack(fill="x")
+        ticket_entry = ttk.Combobox(ticket_row, font=(FAMILY, 11), values=ticket_choices)
+        ticket_entry.pack(side="left", fill="x", expand=True)
         ticket_entry.insert(0, "QUIX-")
+
+        def open_conversation_from_modal() -> None:
+            code = self._clean_ticket_code(ticket_choice_codes.get(ticket_entry.get().strip(), ticket_entry.get()))
+            if not code:
+                show_error("Scrivi prima un codice ticket valido (es. FABA-33).")
+                return
+            window.destroy()
+            self._open_ticket_conversation(code, description_var.get().strip() or self._find_ticket_description(code))
+
+        conversation_btn = icon_button(ticket_row, "chat", open_conversation_from_modal, parent_bg=surface, tooltip="Apri la conversazione del ticket")
+        conversation_btn.pack(side="left", padx=(8, 0))
+
+        # Open ticket (no save): conversation or browser
+        open_section = section()
+        label(
+            open_section,
+            "Apri il ticket per leggerlo, registrare ore o scrivere una nota dalla conversazione. Qui non viene salvato nulla.",
+            kind="muted",
+            bg=surface,
+            wraplength=560,
+        ).pack(anchor="w", pady=(0, 10))
+        open_buttons = tk.Frame(open_section, bg=surface)
+        open_buttons.pack(anchor="w")
+
+        def open_in_browser_from_modal() -> None:
+            code = self._clean_ticket_code(ticket_choice_codes.get(ticket_entry.get().strip(), ticket_entry.get()))
+            if not code:
+                show_error("Scrivi prima un codice ticket valido (es. FABA-33).")
+                return
+            window.destroy()
+            self._open_ticket_for_row(code)
+
+        button(open_buttons, "Apri conversazione", lambda: open_conversation_from_modal(), variant="primary").pack(side="left")
+        button(open_buttons, "Apri nel browser ↗", open_in_browser_from_modal).pack(side="left", padx=(10, 0))
 
         # Ticket (locked)
         ticket_locked_section = section()
@@ -734,7 +800,8 @@ class LoginWindow(tk.Tk):
         sync_check.pack(side="left")
         save_btn = button(window.footer, "Salva", lambda: save(), variant="primary")
         save_btn.pack(side="right")
-        button(window.footer, "Annulla", window.destroy).pack(side="right", padx=(0, 10))
+        cancel_btn = button(window.footer, "Annulla", window.destroy)
+        cancel_btn.pack(side="right", padx=(0, 10))
 
         def show_error(message: str) -> None:
             error_label.configure(text=message)
@@ -747,6 +814,23 @@ class LoginWindow(tk.Tk):
             visible = [
                 ticket_locked_section if (is_off or is_qx) else ticket_edit_section,
             ]
+            if selected == "open_ticket":
+                visible.append(open_section)
+                if error_label.cget("text"):
+                    visible.append(error_section)
+                for frame in sections:
+                    frame.pack_forget()
+                for frame in visible:
+                    frame.pack(fill="x", pady=(0, 14))
+                sync_check.pack_forget()
+                save_btn.pack_forget()
+                conversation_btn.pack_forget()
+                window.recenter()
+                return
+            if not conversation_btn.winfo_ismapped():
+                conversation_btn.pack(side="left", padx=(8, 0))
+            if not save_btn.winfo_ismapped():
+                save_btn.pack(side="right", before=cancel_btn)
             if is_off:
                 visible.append(off_type_section)
                 visible.append(range_date_section)
@@ -823,9 +907,26 @@ class LoginWindow(tk.Tk):
             off_summary_var.set(f"{len(days)} {day_word} · {total} · inviata come {off_label} ({off_type_var.get()})")
             save_btn.configure(text="Salva" if len(days) == 1 else f"Salva {len(days)} voci")
 
+        previous_type = {"value": default_type}
+
         def refresh_form_for_type(*_: object) -> None:
             selected_type = entry_type_var.get()
+            leaving = previous_type["value"]
+            previous_type["value"] = selected_type
             comment_current = comment_text.get("1.0", "end").strip()
+            # Drop what the previous type wrote by itself (e.g. "Ferie" from Extra Off).
+            if leaving == "off" and selected_type != "off":
+                if comment_current in set(OFF_TYPE_LABELS.values()):
+                    comment_text.delete("1.0", "end")
+                    comment_current = ""
+                if hours_var.get().strip().lower() == "8h":
+                    hours_var.set("1h")
+            if leaving == "qxsupport_synced" and selected_type != "qxsupport_synced":
+                if comment_current == "Imported manually from QxSupport web":
+                    comment_text.delete("1.0", "end")
+                    comment_current = ""
+                if description_var.get().strip() == "QxSupport monthly import":
+                    description_var.set("")
             if selected_type == "off":
                 locked_ticket_var.set("OFF")
                 comment_title.configure(text="Commento")
@@ -845,7 +946,7 @@ class LoginWindow(tk.Tk):
                 current_ticket = ticket_entry.get().strip().upper()
                 if current_ticket in {"", "OFF", "QUIX-", "QXSUPPORT", "SFTC-"}:
                     ticket_entry.delete(0, "end")
-                    ticket_entry.insert(0, "SFTC-" if selected_type == "ticket_synced" else "QUIX-")
+                    ticket_entry.insert(0, "QUIX-")
             error_label.configure(text="")
             refresh_summary()
             layout()
@@ -863,6 +964,9 @@ class LoginWindow(tk.Tk):
 
         def save() -> None:
             selected_type = entry_type_var.get()
+            if selected_type == "open_ticket":
+                open_conversation_from_modal()
+                return
             is_off = selected_type == "off"
             comment = comment_text.get("1.0", "end").strip()
 
@@ -1282,6 +1386,15 @@ class LoginWindow(tk.Tk):
             empty = tk.Frame(self.worklog_rows, bg=C["bg_app"])
             empty.pack(fill="x", pady=40)
             label(empty, "Nessuna voce corrisponde ai filtri attivi.", kind="muted", bg=C["bg_app"]).pack()
+            searched_code = self._clean_ticket_code(self.search_var.get()) if "-" in self.search_var.get() else ""
+            if searched_code:
+                button(
+                    empty,
+                    f"Apri {searched_code} nella conversazione",
+                    lambda c=searched_code: self._open_ticket_conversation(c, self._find_ticket_description(c)),
+                    variant="primary",
+                    size="sm",
+                ).pack(pady=(10, 0))
 
             def reset_filters() -> None:
                 self.search_var.set("")
@@ -1309,14 +1422,14 @@ class LoginWindow(tk.Tk):
             self._render_ticket_card(ticket, bundle)
 
         if len(filtered) == len(month_rows):
-            footer_text = f"{len(month_rows)} righe in {month_label_it} · tutte visibili"
+            footer_text = f"{len(month_rows)} {'riga' if len(month_rows) == 1 else 'righe'} in {month_label_it} · tutte visibili"
         else:
             footer_text = f"{len(filtered)} di {len(month_rows)} righe in {month_label_it} · filtri attivi"
         label(self.worklog_rows, footer_text, kind="subtle", bg=C["bg_app"]).pack(pady=(4, 16))
 
         if canvas is not None:
             self.update_idletasks()
-            canvas.configure(scrollregion=canvas.bbox("all"))
+            self._fit_scrollregion(canvas)
             canvas.yview_moveto(scroll_position)
 
     def _toggle_ticket(self, ticket: str, expanded: bool) -> None:
@@ -1576,17 +1689,14 @@ class LoginWindow(tk.Tk):
         window.geometry(f"780x{max(min(self.winfo_height() - 60, 900), 600)}+{self.winfo_rootx() + 60}+{self.winfo_rooty() + 30}")
         window.minsize(640, 520)
         runner = JobRunner(window)
-        state: dict[str, object] = {"page": 1, "posts": [], "ticket_uuid": "", "more": False}
+        state: dict[str, object] = {"page": 1, "posts": [], "ticket_uuid": "", "more": False, "details": None, "full_description": False}
 
         # header
         header = tk.Frame(window, bg=surface, padx=16, pady=12)
         header.pack(fill="x")
         tk.Label(header, text=ticket_code, font=F["title"], bg=surface, fg=C["text"]).pack(side="left")
-        if description:
-            desc = tk.Label(header, text=description, font=F["body"], bg=surface, fg=C["muted"], anchor="w", width=1)
-            desc.pack(side="left", fill="x", expand=True, padx=(12, 12))
-        else:
-            tk.Frame(header, bg=surface).pack(side="left", fill="x", expand=True)
+        header_desc = tk.Label(header, text=description, font=F["body"], bg=surface, fg=C["muted"], anchor="w", width=1)
+        header_desc.pack(side="left", fill="x", expand=True, padx=(12, 12))
         icon_button(header, "open", lambda: self._open_ticket_for_row(ticket_code), parent_bg=surface, tooltip="Apri nel portale").pack(side="right")
         icon_button(header, "refresh", lambda: load(1), parent_bg=surface, tooltip="Aggiorna").pack(side="right")
         divider(window).pack(fill="x")
@@ -1596,31 +1706,55 @@ class LoginWindow(tk.Tk):
         composer.pack(side="bottom", fill="x")
         divider(window).pack(side="bottom", fill="x")
 
-        kind_var = tk.StringVar(value="internal")
-        Segmented(composer, kind_var, [("internal", "Nota interna"), ("public", "Risposta al cliente")], bg=surface).pack(fill="x", pady=(0, 10))
-        message_text = text_area(composer, height=5, width=80)
+        kind_var = tk.StringVar(value="hours")
+        Segmented(
+            composer,
+            kind_var,
+            [("hours", "Solo ore (Lavoro)"), ("internal", "Nota interna"), ("public", "Risposta al cliente")],
+            bg=surface,
+        ).pack(fill="x", pady=(0, 10))
+        message_text = text_area(composer, height=4, width=80)
         message_text.pack(fill="x")
         controls = tk.Frame(composer, bg=surface)
         controls.pack(fill="x", pady=(10, 0))
-        tk.Label(controls, text="Ore", font=F["body"], bg=surface, fg=C["muted"]).pack(side="left")
+        date_box = tk.Frame(controls, bg=surface)
+        tk.Label(date_box, text="Data", font=F["body"], bg=surface, fg=C["muted"]).pack(side="left")
+        date_var = tk.StringVar(value=datetime.now().strftime("%d/%m/%Y"))
+        entry(date_box, width=11, textvariable=date_var).pack(side="left", padx=(8, 14))
+        hours_box = tk.Frame(controls, bg=surface)
+        tk.Label(hours_box, text="Ore", font=F["body"], bg=surface, fg=C["muted"]).pack(side="left")
         hours_var = tk.StringVar(value="")
-        entry(controls, width=8, textvariable=hours_var).pack(side="left", padx=(8, 6))
-        for preset in ("0.5h", "1h", "2h", "4h"):
-            button(controls, preset, lambda p=preset: hours_var.set(p), size="sm").pack(side="left", padx=(0, 4))
+        entry(hours_box, width=8, textvariable=hours_var).pack(side="left", padx=(8, 6))
+        for preset in ("0.5h", "1h", "2h", "4h", "1d"):
+            button(hours_box, preset, lambda p=preset: hours_var.set(p), size="sm").pack(side="left", padx=(0, 4))
         register_var = tk.BooleanVar(value=True)
-        checkbox(controls, "Registra le ore anche qui", register_var, bg=surface).pack(side="left", padx=(10, 0))
-        send_btn = button(controls, "Invia nota interna", lambda: send(), variant="primary")
+        register_check = checkbox(controls, "Registra le ore anche qui", register_var, bg=surface)
+        send_btn = button(controls, "Registra ore", lambda: send(), variant="primary")
         send_btn.pack(side="right")
         composer_hint = tk.Label(composer, text="", font=F["small"], bg=surface, fg=C["subtle"], anchor="w", justify="left")
         composer_hint.pack(fill="x", pady=(8, 0))
 
         def refresh_kind(*_: object) -> None:
-            if kind_var.get() == "public":
-                send_btn.configure(text="Invia al cliente…")
-                composer_hint.configure(text="La risposta viene inviata al cliente per email. Ti chiederò conferma prima dell'invio.", fg=C["warn"])
+            mode = kind_var.get()
+            for widget in (date_box, hours_box, register_check):
+                widget.pack_forget()
+            if mode == "hours":
+                date_box.pack(side="left")
+                hours_box.pack(side="left")
+                send_btn.configure(text="Registra ore")
+                composer_hint.configure(
+                    text="Come “Lavoro”: voce di ore sul ticket, senza messaggi né notifiche. Il testo è il work log. Ctrl+Invio per inviare.",
+                    fg=C["subtle"],
+                )
             else:
-                send_btn.configure(text="Invia nota interna")
-                composer_hint.configure(text="Nota visibile solo internamente (chi segue il ticket riceve la notifica). Ctrl+Invio per inviare.", fg=C["subtle"])
+                hours_box.pack(side="left")
+                register_check.pack(side="left", padx=(10, 0))
+                if mode == "public":
+                    send_btn.configure(text="Invia al cliente…")
+                    composer_hint.configure(text="La risposta viene inviata al cliente per email. Ti chiederò conferma prima dell'invio.", fg=C["warn"])
+                else:
+                    send_btn.configure(text="Invia nota interna")
+                    composer_hint.configure(text="Nota visibile solo internamente (chi segue il ticket riceve la notifica). Ctrl+Invio per inviare.", fg=C["subtle"])
 
         kind_var.trace_add("write", refresh_kind)
         refresh_kind()
@@ -1635,8 +1769,13 @@ class LoginWindow(tk.Tk):
         canvas.configure(yscrollcommand=scrollbar.set)
         posts_frame = tk.Frame(canvas, bg=C["bg_app"], padx=16, pady=12)
         posts_window = canvas.create_window((0, 0), window=posts_frame, anchor="nw")
-        posts_frame.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig(posts_window, width=e.width))
+        posts_frame.bind("<Configure>", lambda _e: self._fit_scrollregion(canvas))
+
+        def on_canvas_configure(event: tk.Event) -> None:
+            canvas.itemconfig(posts_window, width=event.width)
+            self._fit_scrollregion(canvas)
+
+        canvas.bind("<Configure>", on_canvas_configure)
         window.scroll_canvas = canvas  # type: ignore[attr-defined]  # used by _scroll_rotellina
 
         local_entry_ids = {str(r.get("api_entry_id", "")).upper() for r in self.work_logs if r.get("api_entry_id")}
@@ -1648,44 +1787,117 @@ class LoginWindow(tk.Tk):
             except ValueError:
                 return raw.replace("T", " ")[:16]
 
+        def render_details(width: int) -> None:
+            details = state["details"]
+            if not isinstance(details, dict):
+                return
+            card = tk.Frame(posts_frame, bg=surface, highlightthickness=1, highlightbackground=C["border_strong"], padx=14, pady=12)
+            card.pack(fill="x", pady=(0, 12))
+            top = tk.Frame(card, bg=surface)
+            top.pack(fill="x")
+            tk.Label(top, text="Dettagli ticket", font=F["subtitle"], bg=surface, fg=C["text"]).pack(side="left")
+            status_text = str(details.get("status") or "")
+            if status_text:
+                kind = "neutral" if details.get("closed") else ("pending" if "customer" in status_text.lower() else "off")
+                pill(top, status_text, kind).pack(side="left", padx=(10, 0))
+            if details.get("internal_ticket"):
+                pill(top, "Ticket interno", "neutral").pack(side="left", padx=(6, 0))
+            grid_frame = tk.Frame(card, bg=surface)
+            grid_frame.pack(fill="x", pady=(10, 0))
+            fields = [
+                ("Azienda", details.get("company")),
+                ("Richiedente", details.get("requester")),
+                ("Severità", details.get("severity")),
+                ("Tipo", " · ".join(x for x in (details.get("type"), details.get("category")) if x)),
+                ("Progetto", details.get("project")),
+                ("Assegnato a", details.get("assignees")),
+                ("Aperto", format_date(str(details.get("created") or ""))),
+                ("Aggiornato", format_date(str(details.get("updated") or ""))),
+                ("Prodotto", details.get("versions")),
+            ]
+            fields = [(name, value) for name, value in fields if value]
+            for position, (name, value) in enumerate(fields):
+                row_index, column = divmod(position, 2)
+                tk.Label(grid_frame, text=name, font=F["small"], bg=surface, fg=C["subtle"]).grid(row=row_index, column=column * 2, sticky="nw", padx=(0, 8), pady=1)
+                tk.Label(
+                    grid_frame, text=str(value), font=F["body"], bg=surface, fg=C["text"], anchor="w", justify="left", wraplength=max(width // 2 - 120, 180)
+                ).grid(row=row_index, column=column * 2 + 1, sticky="nw", padx=(0, 18), pady=1)
+            grid_frame.columnconfigure(1, weight=1)
+            grid_frame.columnconfigure(3, weight=1)
+            description = str(details.get("description") or "")
+            if description:
+                tk.Label(card, text="Descrizione", font=F["small"], bg=surface, fg=C["subtle"]).pack(anchor="w", pady=(10, 2))
+                limit = 900
+                show_all = bool(state["full_description"]) or len(description) <= limit
+                text = description if show_all else description[:limit].rstrip() + "…"
+                tk.Label(card, text=text, font=F["body"], bg=surface, fg=C["text"], anchor="w", justify="left", wraplength=width).pack(fill="x")
+                if len(description) > limit:
+                    def toggle_description() -> None:
+                        state["full_description"] = not state["full_description"]
+                        render_posts()
+
+                    button(card, "Mostra meno" if show_all else "Mostra tutta la descrizione", toggle_description, variant="link", size="sm", parent_bg=surface).pack(anchor="w", pady=(4, 0))
+                icon_button(top, "copy", lambda t=description: self._copy_with_toast(t, "Descrizione copiata"), parent_bg=surface, tooltip="Copia descrizione").pack(side="right")
+            tk.Label(posts_frame, text="MESSAGGI · più recenti in alto", font=F["caption"], bg=C["bg_app"], fg=C["subtle"]).pack(anchor="w", pady=(0, 6))
+            if state.get("partial"):
+                tk.Label(
+                    posts_frame,
+                    text="Messaggi letti come cliente: le note interne potrebbero non comparire. Aprile dal portale (↗).",
+                    font=F["small"], bg=C["warn_bg"], fg=C["warn"], anchor="w", justify="left", padx=10, pady=6, wraplength=width,
+                ).pack(fill="x", pady=(0, 8))
+
+        def render_post(post: dict[str, object], width: int) -> None:
+            try:
+                render_post_card(post, width)
+            except Exception as exc:  # noqa: BLE001 - one odd post must not hide the others
+                api_log.event(f"    messaggio non visualizzabile ({exc}): {str(post)[:300]}")
+                fallback = tk.Frame(posts_frame, bg=C["surface"], padx=12, pady=10)
+                fallback.pack(fill="x", pady=(0, 8))
+                text = html_to_text(str(post.get("text") or "")) or str(post)[:400]
+                tk.Label(fallback, text=f"{post.get('fullname', '')} · {post.get('post_date', '')}\n{text}", font=F["body"], bg=C["surface"], fg=C["text"], justify="left", anchor="w", wraplength=width).pack(fill="x")
+
         def render_posts() -> None:
             for child in posts_frame.winfo_children():
                 child.destroy()
             posts = state["posts"]
             assert isinstance(posts, list)
+            width = max(canvas.winfo_width() - 80, 420)
+            render_details(width)
             if not posts:
                 tk.Label(posts_frame, text="Nessun messaggio sul ticket.", font=F["body"], bg=C["bg_app"], fg=C["muted"]).pack(pady=20)
-            width = max(canvas.winfo_width() - 80, 420)
             for post in posts:
-                is_log = int(post.get("id_ticket_post") or 0) == -1
-                is_public = bool(post.get("public")) and not is_log
-                card_bg = C["surface"] if is_public else "#1d1f24"
-                card = tk.Frame(posts_frame, bg=card_bg, highlightthickness=1, highlightbackground=C["border"], padx=12, pady=10)
-                card.pack(fill="x", pady=(0, 8))
-                top = tk.Frame(card, bg=card_bg)
-                top.pack(fill="x")
-                tk.Label(top, text=str(post.get("fullname") or post.get("username") or ""), font=F["body_bold"], bg=card_bg, fg=C["text"]).pack(side="left")
-                tk.Label(top, text=format_date(str(post.get("post_date", ""))), font=F["small"], bg=card_bg, fg=C["subtle"]).pack(side="left", padx=(10, 0))
-                if is_log:
-                    pill(top, "Ore registrate", "off").pack(side="left", padx=(10, 0))
-                elif is_public:
-                    pill(top, "Pubblico", "neutral").pack(side="left", padx=(10, 0))
-                else:
-                    pill(top, "Interno", "pending").pack(side="left", padx=(10, 0))
-                spent = str(post.get("time_spent") or "").strip()
-                if spent:
-                    pill(top, spent, "synced").pack(side="left", padx=(6, 0))
-                post_uuid = str(post.get("uuid", "")).upper()
-                if post_uuid and (post_uuid in local_entry_ids or post_uuid in local_post_ids):
-                    tk.Label(top, text="dall'app", font=F["small"], bg=card_bg, fg=C["subtle"]).pack(side="left", padx=(8, 0))
-                attachments = post.get("appAttachments") or []
-                if attachments:
-                    tk.Label(top, text=f"{len(attachments)} allegati (apri dal portale)", font=F["small"], bg=card_bg, fg=C["subtle"]).pack(side="left", padx=(8, 0))
-                text = html_to_text(str(post.get("text") or ""))
-                icon_button(top, "copy", lambda t=text: self._copy_with_toast(t, "Testo copiato"), parent_bg=card_bg, tooltip="Copia testo").pack(side="right")
-                tk.Label(card, text=text or "—", font=F["body"], bg=card_bg, fg=C["text"], anchor="w", justify="left", wraplength=width).pack(fill="x", pady=(6, 0))
+                render_post(post, width)
             if state["more"]:
                 button(posts_frame, "Carica messaggi più vecchi", lambda: load(int(state["page"]) + 1), size="sm").pack(pady=(4, 8))
+
+        def render_post_card(post: dict[str, object], width: int) -> None:
+            is_log = int(post.get("id_ticket_post") or 0) == -1
+            is_public = bool(post.get("public")) and not is_log
+            card_bg = C["surface"] if is_public else "#1d1f24"
+            card = tk.Frame(posts_frame, bg=card_bg, highlightthickness=1, highlightbackground=C["border"], padx=12, pady=10)
+            card.pack(fill="x", pady=(0, 8))
+            top = tk.Frame(card, bg=card_bg)
+            top.pack(fill="x")
+            tk.Label(top, text=str(post.get("fullname") or post.get("username") or ""), font=F["body_bold"], bg=card_bg, fg=C["text"]).pack(side="left")
+            tk.Label(top, text=format_date(str(post.get("post_date", ""))), font=F["small"], bg=card_bg, fg=C["subtle"]).pack(side="left", padx=(10, 0))
+            if is_log:
+                pill(top, "Ore registrate", "off").pack(side="left", padx=(10, 0))
+            elif is_public:
+                pill(top, "Pubblico", "neutral").pack(side="left", padx=(10, 0))
+            else:
+                pill(top, "Interno", "pending").pack(side="left", padx=(10, 0))
+            spent = str(post.get("time_spent") or "").strip()
+            if spent:
+                pill(top, spent, "synced").pack(side="left", padx=(6, 0))
+            post_uuid = str(post.get("uuid", "")).upper()
+            if post_uuid and (post_uuid in local_entry_ids or post_uuid in local_post_ids):
+                tk.Label(top, text="dall'app", font=F["small"], bg=card_bg, fg=C["subtle"]).pack(side="left", padx=(8, 0))
+            attachments = post.get("appAttachments") or []
+            if attachments:
+                tk.Label(top, text=f"{len(attachments)} allegati (apri dal portale)", font=F["small"], bg=card_bg, fg=C["subtle"]).pack(side="left", padx=(8, 0))
+            text = html_to_text(str(post.get("text") or ""))
+            icon_button(top, "copy", lambda t=text: self._copy_with_toast(t, "Testo copiato"), parent_bg=card_bg, tooltip="Copia testo").pack(side="right")
+            tk.Label(card, text=text or "—", font=F["body"], bg=card_bg, fg=C["text"], anchor="w", justify="left", wraplength=width).pack(fill="x", pady=(6, 0))
 
         def show_status(message: str, *, error: bool = False) -> None:
             for child in posts_frame.winfo_children():
@@ -1704,12 +1916,22 @@ class LoginWindow(tk.Tk):
                 return
             if page == 1:
                 cached = ticket_code in self.ticket_uuid_cache or state["ticket_uuid"]
-                show_status("Carico i messaggi…" if cached else "Cerco il ticket sul portale (la prima volta può richiedere qualche secondo)…")
+                show_status("Carico il ticket…" if cached else "Cerco il ticket sul portale (la prima volta può richiedere qualche secondo)…")
 
-            def worker(_emit: object, _cancel: object) -> list[dict[str, object]]:
-                api_log.event(f"=== Lettura messaggi {ticket_code} · pagina {page} ===")
+            def worker(_emit: object, _cancel: object) -> tuple[object, list[dict[str, object]]]:
+                api_log.event(f"=== Lettura ticket {ticket_code} · pagina {page} ===")
                 token = self._ensure_api_session()
-                return self.portal.list_posts(token, ensure_ticket_uuid(token), page)
+                ticket_uuid = ensure_ticket_uuid(token)
+                details = state["details"]
+                if page == 1:
+                    try:
+                        details = self.portal.ticket_details(token, ticket_uuid, refresh=True)
+                    except Exception as exc:  # noqa: BLE001 - messages are still useful without the details
+                        api_log.event(f"    dettagli ticket non disponibili: {exc}")
+                company = str(details.get("company_uuid", "")) if isinstance(details, dict) else ""
+                posts = self.portal.list_posts(token, ticket_uuid, page, ticket_company=company)
+                state["partial"] = self.portal.posts_from_ticket_company(ticket_uuid, company)
+                return details, posts
 
             def on_finish(result: object, error: BaseException | None) -> None:
                 if not window.winfo_exists():
@@ -1717,29 +1939,79 @@ class LoginWindow(tk.Tk):
                 if error is not None:
                     show_status(f"Impossibile leggere i messaggi: {error}", error=True)
                     return
-                assert isinstance(result, list)
+                assert isinstance(result, tuple)
+                details, new_posts = result
+                state["details"] = details
+                if isinstance(details, dict) and details.get("title") and not header_desc.cget("text"):
+                    header_desc.configure(text=str(details["title"]))
                 posts = state["posts"]
                 assert isinstance(posts, list)
-                state["posts"] = result if page == 1 else posts + result
+                state["posts"] = new_posts if page == 1 else posts + new_posts
                 state["page"] = page
-                state["more"] = len(result) >= 10
+                state["more"] = len(new_posts) >= 10
                 render_posts()
                 if page == 1:
                     canvas.yview_moveto(0)
 
             runner.start("lettura messaggi", worker, on_event=lambda *_: None, on_finish=on_finish)
 
+        def send_hours(text: str, parsed: tuple[str, float] | None) -> None:
+            """'Solo ore': a normal work row (like Nuova voce → Lavoro), sent right away."""
+            if parsed is None:
+                composer_hint.configure(text="Inserisci le ore (es. 1h, 2.5h, 1d).", fg=C["danger"])
+                return
+            day = self._parse_user_date(date_var.get())
+            if day is None:
+                composer_hint.configure(text="Data non valida (gg/mm/aaaa).", fg=C["danger"])
+                return
+            if day > datetime.now().date():
+                composer_hint.configure(text="La data è nel futuro.", fg=C["danger"])
+                return
+            details = state["details"]
+            title = str(details.get("title", "")) if isinstance(details, dict) else ""
+            saved = self._append_worklog_entry_with_status(
+                ticket_code,
+                parsed[0],
+                description or title or self._find_ticket_description(ticket_code),
+                text,
+                api_ticket_uuid=str(state["ticket_uuid"] or ""),
+                log_date=day,
+            )
+            if not saved:
+                return
+            row = self.work_logs[0]
+            message_text.delete("1.0", "end")
+            hours_var.set("")
+            target_offset = self._ym_to_offset(day.year, day.month)
+            if target_offset <= 0 and target_offset != self.selected_month_offset:
+                self._set_dashboard_month(target_offset)
+            started = self._start_sync_job(
+                [row],
+                ticket_code,
+                after=lambda: window.winfo_exists() and (refresh_kind(), load(1)),
+            )
+            if started:
+                composer_hint.configure(text=f"Invio di {parsed[0]} al portale…", fg=C["muted"])
+            else:
+                composer_hint.configure(text=f"{parsed[0]} salvate in locale: le invii con “Sincronizza”.", fg=C["warn"])
+
         def send() -> None:
             if runner.running:
                 return
             text = message_text.get("1.0", "end").strip()
             if not text:
-                composer_hint.configure(text="Scrivi il testo del messaggio.", fg=C["danger"])
+                composer_hint.configure(
+                    text="Scrivi il work log." if kind_var.get() == "hours" else "Scrivi il testo del messaggio.",
+                    fg=C["danger"],
+                )
                 return
             hours_raw = hours_var.get().strip()
             parsed = self._parse_working_time(hours_raw) if hours_raw else None
             if hours_raw and parsed is None:
                 composer_hint.configure(text="Ore non valide. Esempi: 0.5h, 1h, 1d 4h", fg=C["danger"])
+                return
+            if kind_var.get() == "hours":
+                send_hours(text, parsed)
                 return
             public = kind_var.get() == "public"
             if public:
@@ -3416,22 +3688,30 @@ class LoginWindow(tk.Tk):
         resend_ids = {id(row) for row in resend}
         return [row for row in rows if id(row) not in resend_ids]
 
-    def _start_sync_job(self, rows: list[dict[str, str]], scope_label: str) -> None:
+    def _start_sync_job(
+        self,
+        rows: list[dict[str, str]],
+        scope_label: str,
+        *,
+        after: Callable[[], object] | None = None,
+    ) -> bool:
+        """Send rows in the background. Returns False if nothing was started.
+        after() runs on the UI thread when the job ends (success or not)."""
         if self.jobs.running:
             self._toast(f"Attendi: {self.jobs.label} in corso", "info")
-            return
+            return False
 
         pending = [row for row in rows if self._is_api_syncable(row) and not self._is_worklog_synced(row)]
         if not pending:
             self._toast(f"Niente da sincronizzare per {scope_label}", "info")
-            return
+            return False
 
         confirmed = self._confirm_resend_rows(pending)
         if confirmed is None:
-            return
+            return False
         if not confirmed:
             self._toast("Nessuna riga inviata", "info")
-            return
+            return False
 
         jobs = [(row, dict(row)) for row in confirmed]
         total = len(jobs)
@@ -3484,7 +3764,14 @@ class LoginWindow(tk.Tk):
             if self.toast.progress_visible and kind in {"row_ok", "row_error"}:
                 self.toast.progress(f"Sincronizzate {stats['done']} di {total}…", int(stats["done"]), total, on_cancel=on_cancel)
 
-        def on_finish(_result: object, error: BaseException | None) -> None:
+        def on_finish(result: object, error: BaseException | None) -> None:
+            try:
+                report(result, error)
+            finally:
+                if after is not None:
+                    after()
+
+        def report(_result: object, error: BaseException | None) -> None:
             self.rows_in_flight = set()
             self.toast.hide_progress()
             self._render_worklogs()
@@ -3517,6 +3804,7 @@ class LoginWindow(tk.Tk):
         self.jobs.start(f"sync {scope_label}", worker, on_event=on_event, on_finish=on_finish)
         self.toast.progress(f"Connessione al portale · {total} {'riga' if total == 1 else 'righe'} da inviare…", 0, total, on_cancel=on_cancel)
         self._render_worklogs()
+        return True
 
     def _confirm_close(self) -> None:
         if self.jobs.running and not messagebox.askyesno(

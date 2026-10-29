@@ -95,6 +95,8 @@ class PortalTickets:
         self.client = client
         self._company_guid: str | None = None
         self._numeric_ids: dict[str, int] = {}
+        self._details: dict[str, dict[str, Any]] = {}
+        self._posts_company: dict[str, str | None] = {}
 
     # ---- lookups
     def company_guid(self, token: str) -> str:
@@ -104,40 +106,125 @@ class PortalTickets:
         guid = ""
         try:
             payload = self.client.request_query("/api/companies", token).payload
-            items = payload if isinstance(payload, list) else []
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                if str(item.get("identifier", "")).upper() == "QUIX" or str(item.get("system", "")).lower() == "true":
-                    guid = str(item.get("uuid", ""))
-                    break
-        except Exception as exc:  # noqa: BLE001 - the posts list may still work without it
+            items = [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+            # Only Quixant itself: other "system" companies exist and hide the internal notes.
+            matches = [item for item in items if str(item.get("identifier", "")).strip().upper() == "QUIX"]
+            if not matches:
+                matches = [item for item in items if str(item.get("nome", "")).strip().lower() == "quixant"]
+            if matches:
+                guid = str(matches[0].get("uuid", ""))
+                api_log.event(f"    idCompany Quixant = {guid} ({matches[0].get('nome', '')})")
+            else:
+                api_log.event("    idCompany: Quixant non trovata in /api/companies")
+        except Exception as exc:  # noqa: BLE001 - fall back to the ticket's company
             api_log.event(f"    idCompany non trovato (/api/companies): {exc}")
         self._company_guid = guid
         return guid
+
+    def ticket_details(self, token: str, ticket_uuid: str, *, refresh: bool = False) -> dict[str, Any]:
+        """Ticket card data from tickets/select/<uuid> (same call the portal page makes)."""
+        key = ticket_uuid.lower()
+        if key in self._details and not refresh:
+            return self._details[key]
+        payload = self.client.request_query(f"/api/tickets/select/{key}", token).payload
+        form = payload.get("form") if isinstance(payload, dict) else None
+        summary = payload.get("list") if isinstance(payload, dict) else None
+        if not isinstance(form, dict):
+            raise RuntimeError("Risposta inattesa da tickets/select.")
+        summary = summary if isinstance(summary, dict) else {}
+
+        def clean(value: Any) -> str:
+            text = "" if value is None else str(value).strip()
+            return "" if text in {"None", "null"} else text
+
+        details = {
+            "id_ticket": clean(form.get("id_ticket")),
+            "internal_id": clean(form.get("internal_id")),
+            "title": clean(form.get("title") or summary.get("title")),
+            "status": clean(form.get("status_name")),
+            "company": clean(summary.get("company")),
+            "company_uuid": clean(form.get("uuid_company")),
+            "requester": clean(form.get("requester")),
+            "severity": clean(summary.get("severity")) or clean(form.get("severity")),
+            "type": clean(form.get("ticket_type_name")),
+            "category": clean(form.get("ticket_category_name")),
+            "project": clean(form.get("internal_project_name")),
+            "created": clean(form.get("creation_date")),
+            "updated": clean(form.get("last_update")),
+            "assignees": ", ".join(str(a) for a in form.get("assignees") or []),
+            "versions": " · ".join(
+                f"{label} {clean(form.get(key))}"
+                for label, key in (("BIOS", "BIOS_version"), ("FPGA", "FPGA_version"), ("LP", "LP_version"), ("Rev.", "revision"), ("Item", "item_code"))
+                if clean(form.get(key))
+            ),
+            "internal_ticket": clean(form.get("internal_ticket")).lower() == "true",
+            "closed": clean(form.get("is_closed")).lower() == "true",
+            "description": html_to_text(clean(form.get("description"))),
+        }
+        if details["id_ticket"]:
+            self._numeric_ids[key] = int(details["id_ticket"])
+        self._details[key] = details
+        return details
 
     def numeric_ticket_id(self, token: str, ticket_uuid: str) -> int:
         key = ticket_uuid.lower()
         if key in self._numeric_ids:
             return self._numeric_ids[key]
-        payload = self.client.request_query(f"/api/tickets/select/{key}", token).payload
-        form = payload.get("form") if isinstance(payload, dict) else None
-        value = form.get("id_ticket") if isinstance(form, dict) else None
-        if value in (None, ""):
+        details = self.ticket_details(token, ticket_uuid)
+        if not details.get("id_ticket"):
             raise RuntimeError("Il portale non ha restituito l'id numerico del ticket (tickets/select).")
-        self._numeric_ids[key] = int(value)
-        return int(value)
+        return self._numeric_ids[key]
 
     # ---- posts
-    def list_posts(self, token: str, ticket_uuid: str, page: int = 1) -> list[dict[str, Any]]:
+    def _posts_request(self, token: str, ticket_uuid: str, page: int, company: str | None) -> list[dict[str, Any]]:
         query: dict[str, Any] = {"page": page, "uuid": ticket_uuid.lower()}
-        company = self.company_guid(token)
         if company:
             query["idCompany"] = company
         payload = self.client.request_query("/api/ticket_posts/list", token, query).payload
         if not isinstance(payload, list):
             raise RuntimeError(f"Risposta inattesa da ticket_posts/list: {str(payload)[:200]}")
         return [post for post in payload if isinstance(post, dict)]
+
+    @staticmethod
+    def _real_posts(posts: list[dict[str, Any]]) -> int:
+        """Messages, not the working-hours entries the list also returns (id_ticket_post = -1)."""
+        return sum(1 for post in posts if str(post.get("id_ticket_post", "")) != "-1")
+
+    def list_posts(self, token: str, ticket_uuid: str, page: int = 1, *, ticket_company: str = "") -> list[dict[str, Any]]:
+        """Messages of a ticket, newest first, 10 per page.
+
+        The page sends idCompany = Quixant. If that returns only working-hours entries, the
+        request is retried without idCompany and with the ticket's company; the variant that
+        returns most messages is remembered for the ticket.
+        """
+        key = ticket_uuid.lower()
+        if key in self._posts_company:
+            return self._posts_request(token, key, page, self._posts_company[key])
+
+        quixant = self.company_guid(token)
+        best_company: str | None = quixant or None
+        best = self._posts_request(token, key, page, best_company)
+        if page == 1 and self._real_posts(best) == 0 and ticket_company and ticket_company != best_company:
+            # Last resort: the customer's company shows the public messages (internal notes may be hidden).
+            for alternative in (ticket_company,):
+                try:
+                    candidate = self._posts_request(token, key, page, alternative)
+                except Exception as exc:  # noqa: BLE001 - keep the first answer
+                    api_log.event(f"    variante idCompany={alternative or '(nessuno)'} non riuscita: {exc}")
+                    continue
+                if self._real_posts(candidate) > self._real_posts(best):
+                    best, best_company = candidate, alternative
+            api_log.event(
+                f"    messaggi: uso idCompany={best_company or '(nessuno)'} · {self._real_posts(best)} messaggi + "
+                f"{len(best) - self._real_posts(best)} voci di ore"
+            )
+        self._posts_company[key] = best_company
+        return best
+
+    def posts_from_ticket_company(self, ticket_uuid: str, ticket_company: str) -> bool:
+        """True when the messages were read with the customer's company (internal notes may be missing)."""
+        used = self._posts_company.get(ticket_uuid.lower())
+        return bool(used) and used == ticket_company and used != self._company_guid
 
     def create_post(self, token: str, ticket_uuid: str, text: str, *, public: bool, time_spent: str = "") -> dict[str, Any]:
         guid_payload = self.client.request_query("/api/tickets/newguid", token).payload

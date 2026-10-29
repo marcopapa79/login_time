@@ -71,6 +71,18 @@ class PortalTicketsTests(unittest.TestCase):
         self.assertEqual(result["post_uuid"], "6b6b6b01-dd21-42c7-952d-54f6430a3fb0")
 
 
+class CompanyGuidTests(unittest.TestCase):
+    def test_quixant_is_chosen_not_another_system_company(self):
+        client = QuixantHubClient()
+        companies = [
+            {"uuid": "621893f0-f37a-489e-b50d-cc1ed06e0229", "nome": "Other system", "identifier": "SYS", "system": "True"},
+            {"uuid": "81269f55-4d24-4486-9cbf-ad2ce6468733", "nome": "Quixant", "identifier": "QUIX", "system": "True"},
+        ]
+        client.request_query = lambda *_a, **_k: ApiResponse(200, companies, "")
+        with mock.patch("login_time.portal.api_log"):
+            self.assertEqual(PortalTickets(client).company_guid("tok"), "81269f55-4d24-4486-9cbf-ad2ce6468733")
+
+
 class UpdateFlowTests(unittest.TestCase):
     def window_with(self, row, list_entries):
         window = object.__new__(LoginWindow)
