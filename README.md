@@ -14,6 +14,10 @@ locally and sync it to Quixant Hub (`https://support.quixant.com`) through its A
 - Warning before re-sending a row that was edited after being synced (the portal would get a duplicate)
 - Import of QxSupport hours for the selected month
 - Advanced: API tester for the portal endpoints (profile menu)
+- Edit a synced row → the existing portal entry is updated (no duplicate); remove → optionally deleted from the portal too
+- Ticket conversation window (✉ on the ticket card): read public/internal messages, send an internal note or a reply to the customer with hours
+- "Confronta col portale": per-ticket comparison of local hours vs portal for the month; links old rows to their portal entry
+- Debug log of every API call in `logs/api_sync.log` (profile menu → "Apri log API"); API notes in `docs/portal-api.md`
 
 ## Run
 From the project root:

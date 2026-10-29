@@ -58,6 +58,17 @@ class QuixantHubClient:
             content_type = "application/json"
         return self._send(method, path, token=token, body=body, content_type=content_type)
 
+    def request_form(
+        self,
+        method: str,
+        path: str,
+        token: str,
+        data: dict[str, Any],
+    ) -> ApiResponse:
+        """Form-encoded body, like the portal page's jQuery $.ajax({data: {...}}) calls."""
+        body = parse.urlencode({key: "" if value is None else str(value) for key, value in data.items()}).encode("utf-8")
+        return self._send(method, path, token=token, body=body, content_type="application/x-www-form-urlencoded; charset=UTF-8")
+
     def request_query(
         self,
         path: str,

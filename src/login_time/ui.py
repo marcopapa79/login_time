@@ -25,6 +25,7 @@ from .config import (
     save_work_logs,
 )
 from .jobs import JobRunner
+from .portal import PortalTickets, find_entry_id, html_to_text, portal_hours
 from .theme import (
     C,
     F,
@@ -380,6 +381,8 @@ class LoginWindow(tk.Tk):
         button(row, "+  Nuova voce", self._open_worklog_window, variant="primary").pack(side="right")
         self.sync_month_btn = button(row, "Sincronizza mese", self._sync_current_month, parent_bg=bg, bold=True)
         self.sync_month_btn.pack(side="right", padx=(0, 12))
+        self.compare_btn = button(row, "Confronta col portale", self._start_portal_compare, variant="ghost", parent_bg=bg)
+        self.compare_btn.pack(side="right", padx=(0, 8))
         self.status_pill = tk.Label(row, text="", font=F["small_bold"], padx=10, pady=6)
         self.status_pill.pack(side="right", padx=(0, 12))
 
@@ -472,11 +475,10 @@ class LoginWindow(tk.Tk):
 
     def _scroll_rotellina(self, event: tk.Event) -> None:
         try:
-            canvas = self.worklog_canvas
+            top = event.widget.winfo_toplevel()
+            # Main window scrolls the worklog list; a secondary window may expose its own scroll_canvas.
+            canvas = self.worklog_canvas if top is self else getattr(top, "scroll_canvas", None)
             if canvas is None or not canvas.winfo_exists():
-                return
-            # Ignora la rotellina nelle finestre secondarie (Toplevel)
-            if event.widget.winfo_toplevel() is not self:
                 return
             # Su Windows ogni "scatto" della rotellina vale delta = 120
             passi = -event.delta / 120 * SCROLL_UNITA_PER_SCATTO
@@ -495,6 +497,7 @@ class LoginWindow(tk.Tk):
         profile_menu.add_separator()
         profile_menu.add_command("Apri ticket per codice…", self._open_ticket_window)
         profile_menu.add_command("Importa QxSupport del mese", self._import_qxsupport_current_month, disabled=self.jobs.running)
+        profile_menu.add_command("Confronta il mese col portale", self._start_portal_compare, disabled=self.jobs.running)
         profile_menu.add_separator()
         profile_menu.add_command("Apri log API (debug sync)", self._open_api_log)
         profile_menu.add_command("Advanced · API tester", self._open_api_update_window)
@@ -1068,6 +1071,7 @@ class LoginWindow(tk.Tk):
         off_type: str = "",
         log_date: date | None = None,
         render: bool = True,
+        extra_fields: dict[str, str] | None = None,
     ) -> bool:
         normalized_type = "off" if str(entry_type).strip().lower() == "off" else "work"
         if str(entry_type).strip().lower() == "qxsupport_synced":
@@ -1133,6 +1137,8 @@ class LoginWindow(tk.Tk):
             "api_ticket_uuid": api_ticket_uuid,
             "api_month_displacement": api_month_displacement if api_month_displacement else self._month_displacement_for_label(month_label),
         }
+        if extra_fields:
+            item.update(extra_fields)
         self.work_logs.insert(0, item)
         save_work_logs(self.work_logs)
         if render:
@@ -1385,10 +1391,13 @@ class LoginWindow(tk.Tk):
         else:
             pill(head, "Tutte sincronizzate", "synced").grid(row=0, column=5)
         if not is_off and not is_qx:
-            icon_button(head, "open", lambda t=ticket: self._open_ticket_for_row(t), parent_bg=surface, tooltip="Apri ticket nel portale").grid(row=0, column=7, padx=(8, 0))
+            icon_button(
+                head, "chat", lambda t=ticket, d=description: self._open_ticket_conversation(t, d), parent_bg=surface, tooltip="Conversazione · nota interna con ore"
+            ).grid(row=0, column=7, padx=(8, 0))
+            icon_button(head, "open", lambda t=ticket: self._open_ticket_for_row(t), parent_bg=surface, tooltip="Apri ticket nel portale").grid(row=0, column=8, padx=(2, 0))
         more_btn = icon_button(head, "more", None, parent_bg=surface, tooltip="Altre azioni")
         more_btn.configure(command=lambda b=more_btn, t=ticket, d=description, p=pending_count, o=is_off or is_qx: self._show_ticket_menu(b, t, d, p, o))
-        more_btn.grid(row=0, column=8, padx=(2, 0))
+        more_btn.grid(row=0, column=9, padx=(2, 0))
 
         if not expanded:
             return
@@ -1438,8 +1447,13 @@ class LoginWindow(tk.Tk):
         status = tk.Frame(line, bg=normal_bg)
         status.grid(row=0, column=3, sticky="w")
         in_flight = id(row) in self.rows_in_flight
+        pending_update = not synced and row.get("api_pending_action") == "update"
         if in_flight:
             pill(status, "Invio in corso…", "neutral").pack(side="left")
+        elif pending_update:
+            update_pill = pill(status, "Da aggiornare", "pending")
+            update_pill.pack(side="left")
+            Tooltip(update_pill, "Modificata dopo l'invio: al prossimo sync viene aggiornata la voce già presente sul portale.")
         else:
             pill(status, "Sincronizzata" if synced else "Da sincronizzare", "synced" if synced else "pending").pack(side="left")
         if not synced and str(row.get("api_resend_of", "")).strip() and not in_flight:
@@ -1506,6 +1520,8 @@ class LoginWindow(tk.Tk):
         ticket_menu = DarkMenu(self)
         if not is_special:
             ticket_menu.add_command("Apri ticket nel portale", lambda: self._open_ticket_for_row(ticket))
+        if not is_special:
+            ticket_menu.add_command("Conversazione e nota con ore…", lambda: self._open_ticket_conversation(ticket, description))
         ticket_menu.add_command("Copia codice ticket", lambda: self._copy_with_toast(ticket, f"{ticket} copiato"))
         ticket_menu.add_command("Copia descrizione", lambda: self._copy_with_toast(description, "Descrizione copiata"))
         ticket_menu.add_command("Modifica descrizione…", lambda: self._open_edit_description_window(ticket))
@@ -1531,10 +1547,443 @@ class LoginWindow(tk.Tk):
         row_menu.add_command("Copia work log", lambda: self._copy_with_toast(work_log, "Work log copiato"))
         row_menu.add_command("Modifica riga…", lambda: self._open_edit_log_window(index), disabled=in_flight)
         if not synced:
-            row_menu.add_command("Invia al portale", lambda: self._sync_single_worklog(index), disabled=self.jobs.running)
+            send_label = "Aggiorna sul portale" if row.get("api_pending_action") == "update" else "Invia al portale"
+            row_menu.add_command(send_label, lambda: self._sync_single_worklog(index), disabled=self.jobs.running)
+        if row.get("api_pending_action") == "update":
+            row_menu.add_command("Invia come nuova voce (non aggiornare)", lambda: self._send_as_new_entry(row), disabled=in_flight)
         row_menu.add_separator()
         row_menu.add_command("Rimuovi riga…", lambda: self._remove_worklog(index), danger=True, disabled=in_flight)
         row_menu.popup_below(anchor, align_right=True)
+
+    # ------------------------------------------------------------------ ticket conversation panel
+    def _open_ticket_conversation(self, ticket: str, description: str = "") -> None:
+        """Non-modal window: ticket posts (ticket_posts/list) + composer for an internal note or a reply with hours."""
+        ticket_code = self._normalize_ticket_code(ticket)
+        panels: dict[str, tk.Toplevel] = self.__dict__.get("_ticket_panels", {})
+        self._ticket_panels = panels
+        existing = panels.get(ticket_code)
+        if existing is not None and existing.winfo_exists():
+            existing.deiconify()
+            existing.lift()
+            existing.focus_force()
+            return
+
+        surface = C["surface"]
+        window = tk.Toplevel(self)
+        panels[ticket_code] = window
+        window.title(f"{ticket_code} · conversazione")
+        window.configure(bg=C["bg_app"])
+        window.geometry(f"780x{max(min(self.winfo_height() - 60, 900), 600)}+{self.winfo_rootx() + 60}+{self.winfo_rooty() + 30}")
+        window.minsize(640, 520)
+        runner = JobRunner(window)
+        state: dict[str, object] = {"page": 1, "posts": [], "ticket_uuid": "", "more": False}
+
+        # header
+        header = tk.Frame(window, bg=surface, padx=16, pady=12)
+        header.pack(fill="x")
+        tk.Label(header, text=ticket_code, font=F["title"], bg=surface, fg=C["text"]).pack(side="left")
+        if description:
+            desc = tk.Label(header, text=description, font=F["body"], bg=surface, fg=C["muted"], anchor="w", width=1)
+            desc.pack(side="left", fill="x", expand=True, padx=(12, 12))
+        else:
+            tk.Frame(header, bg=surface).pack(side="left", fill="x", expand=True)
+        icon_button(header, "open", lambda: self._open_ticket_for_row(ticket_code), parent_bg=surface, tooltip="Apri nel portale").pack(side="right")
+        icon_button(header, "refresh", lambda: load(1), parent_bg=surface, tooltip="Aggiorna").pack(side="right")
+        divider(window).pack(fill="x")
+
+        # composer (packed at the bottom first so the list takes the remaining space)
+        composer = tk.Frame(window, bg=surface, padx=16, pady=12)
+        composer.pack(side="bottom", fill="x")
+        divider(window).pack(side="bottom", fill="x")
+
+        kind_var = tk.StringVar(value="internal")
+        Segmented(composer, kind_var, [("internal", "Nota interna"), ("public", "Risposta al cliente")], bg=surface).pack(fill="x", pady=(0, 10))
+        message_text = text_area(composer, height=5, width=80)
+        message_text.pack(fill="x")
+        controls = tk.Frame(composer, bg=surface)
+        controls.pack(fill="x", pady=(10, 0))
+        tk.Label(controls, text="Ore", font=F["body"], bg=surface, fg=C["muted"]).pack(side="left")
+        hours_var = tk.StringVar(value="")
+        entry(controls, width=8, textvariable=hours_var).pack(side="left", padx=(8, 6))
+        for preset in ("0.5h", "1h", "2h", "4h"):
+            button(controls, preset, lambda p=preset: hours_var.set(p), size="sm").pack(side="left", padx=(0, 4))
+        register_var = tk.BooleanVar(value=True)
+        checkbox(controls, "Registra le ore anche qui", register_var, bg=surface).pack(side="left", padx=(10, 0))
+        send_btn = button(controls, "Invia nota interna", lambda: send(), variant="primary")
+        send_btn.pack(side="right")
+        composer_hint = tk.Label(composer, text="", font=F["small"], bg=surface, fg=C["subtle"], anchor="w", justify="left")
+        composer_hint.pack(fill="x", pady=(8, 0))
+
+        def refresh_kind(*_: object) -> None:
+            if kind_var.get() == "public":
+                send_btn.configure(text="Invia al cliente…")
+                composer_hint.configure(text="La risposta viene inviata al cliente per email. Ti chiederò conferma prima dell'invio.", fg=C["warn"])
+            else:
+                send_btn.configure(text="Invia nota interna")
+                composer_hint.configure(text="Nota visibile solo internamente (chi segue il ticket riceve la notifica). Ctrl+Invio per inviare.", fg=C["subtle"])
+
+        kind_var.trace_add("write", refresh_kind)
+        refresh_kind()
+
+        # posts list
+        list_host = tk.Frame(window, bg=C["bg_app"])
+        list_host.pack(fill="both", expand=True)
+        canvas = tk.Canvas(list_host, bg=C["bg_app"], highlightthickness=0, yscrollincrement=SCROLL_PIXEL_PER_UNITA)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(list_host, orient="vertical", command=canvas.yview)
+        scrollbar.pack(side="right", fill="y")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        posts_frame = tk.Frame(canvas, bg=C["bg_app"], padx=16, pady=12)
+        posts_window = canvas.create_window((0, 0), window=posts_frame, anchor="nw")
+        posts_frame.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(posts_window, width=e.width))
+        window.scroll_canvas = canvas  # type: ignore[attr-defined]  # used by _scroll_rotellina
+
+        local_entry_ids = {str(r.get("api_entry_id", "")).upper() for r in self.work_logs if r.get("api_entry_id")}
+        local_post_ids = {str(r.get("api_post_uuid", "")).upper() for r in self.work_logs if r.get("api_post_uuid")}
+
+        def format_date(raw: str) -> str:
+            try:
+                return datetime.fromisoformat(raw).strftime("%d/%m/%Y %H:%M")
+            except ValueError:
+                return raw.replace("T", " ")[:16]
+
+        def render_posts() -> None:
+            for child in posts_frame.winfo_children():
+                child.destroy()
+            posts = state["posts"]
+            assert isinstance(posts, list)
+            if not posts:
+                tk.Label(posts_frame, text="Nessun messaggio sul ticket.", font=F["body"], bg=C["bg_app"], fg=C["muted"]).pack(pady=20)
+            width = max(canvas.winfo_width() - 80, 420)
+            for post in posts:
+                is_log = int(post.get("id_ticket_post") or 0) == -1
+                is_public = bool(post.get("public")) and not is_log
+                card_bg = C["surface"] if is_public else "#1d1f24"
+                card = tk.Frame(posts_frame, bg=card_bg, highlightthickness=1, highlightbackground=C["border"], padx=12, pady=10)
+                card.pack(fill="x", pady=(0, 8))
+                top = tk.Frame(card, bg=card_bg)
+                top.pack(fill="x")
+                tk.Label(top, text=str(post.get("fullname") or post.get("username") or ""), font=F["body_bold"], bg=card_bg, fg=C["text"]).pack(side="left")
+                tk.Label(top, text=format_date(str(post.get("post_date", ""))), font=F["small"], bg=card_bg, fg=C["subtle"]).pack(side="left", padx=(10, 0))
+                if is_log:
+                    pill(top, "Ore registrate", "off").pack(side="left", padx=(10, 0))
+                elif is_public:
+                    pill(top, "Pubblico", "neutral").pack(side="left", padx=(10, 0))
+                else:
+                    pill(top, "Interno", "pending").pack(side="left", padx=(10, 0))
+                spent = str(post.get("time_spent") or "").strip()
+                if spent:
+                    pill(top, spent, "synced").pack(side="left", padx=(6, 0))
+                post_uuid = str(post.get("uuid", "")).upper()
+                if post_uuid and (post_uuid in local_entry_ids or post_uuid in local_post_ids):
+                    tk.Label(top, text="dall'app", font=F["small"], bg=card_bg, fg=C["subtle"]).pack(side="left", padx=(8, 0))
+                attachments = post.get("appAttachments") or []
+                if attachments:
+                    tk.Label(top, text=f"{len(attachments)} allegati (apri dal portale)", font=F["small"], bg=card_bg, fg=C["subtle"]).pack(side="left", padx=(8, 0))
+                text = html_to_text(str(post.get("text") or ""))
+                icon_button(top, "copy", lambda t=text: self._copy_with_toast(t, "Testo copiato"), parent_bg=card_bg, tooltip="Copia testo").pack(side="right")
+                tk.Label(card, text=text or "—", font=F["body"], bg=card_bg, fg=C["text"], anchor="w", justify="left", wraplength=width).pack(fill="x", pady=(6, 0))
+            if state["more"]:
+                button(posts_frame, "Carica messaggi più vecchi", lambda: load(int(state["page"]) + 1), size="sm").pack(pady=(4, 8))
+
+        def show_status(message: str, *, error: bool = False) -> None:
+            for child in posts_frame.winfo_children():
+                child.destroy()
+            tk.Label(posts_frame, text=message, font=F["body"], bg=C["bg_app"], fg=C["danger"] if error else C["muted"], wraplength=640, justify="left").pack(pady=20, anchor="w")
+
+        def ensure_ticket_uuid(token: str) -> str:
+            ticket_uuid = str(state["ticket_uuid"])
+            if not ticket_uuid:
+                ticket_uuid = self._resolve_ticket_uuid_cached(token, ticket_code)
+                state["ticket_uuid"] = ticket_uuid
+            return ticket_uuid
+
+        def load(page: int) -> None:
+            if runner.running:
+                return
+            if page == 1:
+                cached = ticket_code in self.ticket_uuid_cache or state["ticket_uuid"]
+                show_status("Carico i messaggi…" if cached else "Cerco il ticket sul portale (la prima volta può richiedere qualche secondo)…")
+
+            def worker(_emit: object, _cancel: object) -> list[dict[str, object]]:
+                api_log.event(f"=== Lettura messaggi {ticket_code} · pagina {page} ===")
+                token = self._ensure_api_session()
+                return self.portal.list_posts(token, ensure_ticket_uuid(token), page)
+
+            def on_finish(result: object, error: BaseException | None) -> None:
+                if not window.winfo_exists():
+                    return
+                if error is not None:
+                    show_status(f"Impossibile leggere i messaggi: {error}", error=True)
+                    return
+                assert isinstance(result, list)
+                posts = state["posts"]
+                assert isinstance(posts, list)
+                state["posts"] = result if page == 1 else posts + result
+                state["page"] = page
+                state["more"] = len(result) >= 10
+                render_posts()
+                if page == 1:
+                    canvas.yview_moveto(0)
+
+            runner.start("lettura messaggi", worker, on_event=lambda *_: None, on_finish=on_finish)
+
+        def send() -> None:
+            if runner.running:
+                return
+            text = message_text.get("1.0", "end").strip()
+            if not text:
+                composer_hint.configure(text="Scrivi il testo del messaggio.", fg=C["danger"])
+                return
+            hours_raw = hours_var.get().strip()
+            parsed = self._parse_working_time(hours_raw) if hours_raw else None
+            if hours_raw and parsed is None:
+                composer_hint.configure(text="Ore non valide. Esempi: 0.5h, 1h, 1d 4h", fg=C["danger"])
+                return
+            public = kind_var.get() == "public"
+            if public:
+                preview = text if len(text) <= 400 else text[:397] + "…"
+                hours_line = f"\nOre registrate: {parsed[0]}" if parsed else ""
+                if not messagebox.askyesno(
+                    "Risposta al cliente",
+                    f"Il messaggio verrà inviato al cliente di {ticket_code} per email:\n\n{preview}{hours_line}\n\nInviare?",
+                    icon="warning",
+                    parent=window,
+                ):
+                    return
+            send_btn.configure(state="disabled")
+            composer_hint.configure(text="Invio in corso…", fg=C["muted"])
+            time_spent = parsed[0] if parsed else ""
+
+            def worker(_emit: object, _cancel: object) -> tuple[dict[str, object], str]:
+                kind = "risposta al cliente" if public else "nota interna"
+                api_log.event(f"=== {kind.capitalize()} su {ticket_code}" + (f" · {time_spent}" if time_spent else "") + " ===")
+                token = self._ensure_api_session()
+                ticket_uuid = ensure_ticket_uuid(token)
+                result = self.portal.create_post(token, ticket_uuid, text, public=public, time_spent=time_spent)
+                api_log.event(f"    ESITO: OK · messaggio {result.get('new_post_uuid') or result.get('post_uuid')}")
+                return result, ticket_uuid
+
+            def on_finish(result: object, error: BaseException | None) -> None:
+                if not window.winfo_exists():
+                    return
+                send_btn.configure(state="normal")
+                if error is not None:
+                    api_log.event(f"    ESITO: ERRORE · {error}")
+                    composer_hint.configure(text=f"Invio non riuscito: {error}", fg=C["danger"])
+                    return
+                assert isinstance(result, tuple)
+                created, ticket_uuid = result
+                post_uuid = str(created.get("post_uuid") or created.get("new_post_uuid") or "").upper()
+                message_text.delete("1.0", "end")
+                hours_var.set("")
+                refresh_kind()
+                if parsed and register_var.get():
+                    local_post_ids.add(post_uuid)
+                    self._append_worklog_entry_with_status(
+                        ticket_code,
+                        parsed[0],
+                        description or self._find_ticket_description(ticket_code),
+                        text[:1000],
+                        api_synced=True,
+                        api_synced_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+                        api_ticket_uuid=ticket_uuid,
+                        extra_fields={"api_post_uuid": post_uuid},
+                    )
+                kind = "Risposta inviata al cliente" if public else "Nota interna inviata"
+                self._toast(f"{kind} su {ticket_code}" + (f" · {parsed[0]} registrate" if parsed else ""))
+                load(1)
+
+            runner.start("invio messaggio", worker, on_event=lambda *_: None, on_finish=on_finish)
+
+        window.bind("<Control-Return>", lambda _e: send())
+        window.bind("<Escape>", lambda _e: window.destroy())
+        window.after(50, lambda: load(1))
+        message_text.focus_set()
+
+    # ------------------------------------------------------------------ compare month with the portal
+    def _start_portal_compare(self) -> None:
+        if self.jobs.running:
+            self._toast(f"Attendi: {self.jobs.label} in corso", "info")
+            return
+        month_label = self._get_summary_month()
+        month_it = self._month_label_it(self.selected_month_offset)
+        month_rows = [row for row in self.work_logs if str(row.get("month", "")) == month_label]
+        tickets = sorted({str(row.get("ticket", "")) for row in month_rows if str(row.get("ticket", "")) not in {"OFF", "QXSUPPORT", ""}})
+        if not tickets:
+            self._toast(f"Nessun ticket da confrontare in {month_it}", "info")
+            return
+        username = self.credentials["username"].strip().lower()
+        total = len(tickets)
+
+        def worker(emit: Callable[[str, object], None], cancel: threading.Event) -> dict[str, object]:
+            api_log.event(f"=== Confronto con il portale · {month_label} · {total} ticket ===")
+            token = self._ensure_api_session()
+            results: list[dict[str, object]] = []
+            links: list[tuple[dict[str, str], str]] = []
+            claimed = self._claimed_entry_ids()
+            fullname = ""
+            extra_times_hours: float | None = None
+            for position, ticket in enumerate(tickets):
+                if cancel.is_set():
+                    break
+                emit("current", (position, ticket))
+                local_rows = [row for row in month_rows if row.get("ticket") == ticket]
+                local_total = sum(self._hours_from_worklog_row(row) for row in local_rows)
+                local_synced = sum(self._hours_from_worklog_row(row) for row in local_rows if self._is_worklog_synced(row))
+                item: dict[str, object] = {"ticket": ticket, "local_total": local_total, "local_synced": local_synced}
+                try:
+                    ticket_uuid = self._resolve_ticket_uuid_cached(token, ticket)
+                    entries = self.portal.list_working_hours(token, ticket_uuid)
+                    mine = [
+                        e for e in entries
+                        if str(e.get("Username", "")).lower() == username and str(e.get("Month", "")).lower() == month_label.lower()
+                    ]
+                    if mine and not fullname:
+                        fullname = str(mine[0].get("FullName", ""))
+                    entry_hours = sum(portal_hours(e.get("WorkingTime")) or 0.0 for e in mine)
+
+                    # Link local synced rows to their portal entry (Id) when it is missing.
+                    for row in local_rows:
+                        if row.get("api_entry_id") or self._portal_entry_kind(row) != "entry" or not self._is_worklog_synced(row):
+                            continue
+                        hours, reason = self._portal_values_of(row)
+                        entry_id = find_entry_id(mine, username=username, month_label=month_label, hours=hours, reason=reason, exclude_ids=claimed)
+                        if entry_id:
+                            claimed.add(entry_id.upper())
+                            links.append((row, entry_id.upper()))
+                    linked_ids = claimed | {eid for _r, eid in links}
+                    unlinked = [e for e in mine if str(e.get("Id", "")).upper() not in linked_ids]
+
+                    times = self.portal.get_times(token, ticket_uuid)
+                    total_hours: float | None = None
+                    for wt in times.get("working_times") or []:
+                        if str(wt.get("Month", "")).lower() == month_label.lower() and (not fullname or str(wt.get("FullName", "")) == fullname):
+                            total_hours = (total_hours or 0.0) + (portal_hours(wt.get("WorkingTime")) or 0.0)
+                    if extra_times_hours is None and fullname:
+                        for et in times.get("extra_times") or []:
+                            if str(et.get("Month", "")).lower() == month_label.lower() and str(et.get("FullName", "")) == fullname:
+                                extra_times_hours = (extra_times_hours or 0.0) + (portal_hours(et.get("WorkingTime")) or 0.0)
+                    portal_total = total_hours if total_hours is not None else entry_hours
+                    item.update(
+                        portal_total=portal_total,
+                        entry_hours=entry_hours,
+                        posts_hours=max(portal_total - entry_hours, 0.0),
+                        unlinked=[
+                            f"{e.get('WorkingTime', '')} · {str(e.get('Reason', ''))[:60]}" for e in unlinked
+                        ],
+                    )
+                    api_log.event(
+                        f"    {ticket}: qui {local_synced:g}h sincronizzate su {local_total:g}h · portale {portal_total:g}h "
+                        f"({len(mine)} voci, {len(unlinked)} non collegate)"
+                    )
+                except Exception as exc:  # noqa: BLE001 - one failing ticket must not stop the comparison
+                    item["error"] = str(exc)
+                    api_log.event(f"    {ticket}: ERRORE · {exc}")
+                results.append(item)
+            return {"results": results, "links": links, "extra_times": extra_times_hours, "cancelled": cancel.is_set()}
+
+        def on_cancel() -> None:
+            self.jobs.cancel()
+            self.toast.progress_cancel_requested()
+
+        def on_event(kind: str, payload: object) -> None:
+            if kind == "current":
+                position, ticket = payload  # type: ignore[misc]
+                self.toast.progress(f"Confronto {ticket} · {position + 1} di {total}…", position, total, on_cancel=on_cancel)
+
+        def on_finish(result: object, error: BaseException | None) -> None:
+            self.toast.hide_progress()
+            if error is not None:
+                self._notify_error("Confronto non riuscito", error)
+                return
+            assert isinstance(result, dict)
+            links = result["links"]
+            assert isinstance(links, list)
+            for row, entry_id in links:
+                if any(item is row for item in self.work_logs) and not row.get("api_entry_id"):
+                    row["api_entry_id"] = entry_id
+            if links:
+                save_work_logs(self.work_logs)
+            self._render_worklogs()
+            self._show_compare_results(month_it, result)
+
+        self.jobs.start(f"confronto {month_it}", worker, on_event=on_event, on_finish=on_finish)
+        self.toast.progress(f"Confronto {month_it} con il portale…", 0, total, on_cancel=on_cancel)
+
+    def _show_compare_results(self, month_it: str, result: dict[str, object]) -> None:
+        results = result["results"]
+        assert isinstance(results, list)
+        links = result["links"]
+        assert isinstance(links, list)
+        window = Modal(self, f"Confronto con il portale · {month_it}", width=760)
+        body = window.body
+        surface = C["surface"]
+
+        grid = tk.Frame(body, bg=surface)
+        grid.pack(fill="x")
+        for column, (text, width) in enumerate((("TICKET", 14), ("QUI (SINCR.)", 12), ("PORTALE", 10), ("STATO", 46))):
+            tk.Label(grid, text=text, font=F["caption"], bg=surface, fg=C["subtle"], width=width, anchor="w").grid(row=0, column=column, sticky="w", pady=(0, 6))
+
+        problems = 0
+        for row_index, item in enumerate(results, start=1):
+            ticket = str(item["ticket"])
+            local_total = float(item["local_total"])  # type: ignore[arg-type]
+            local_synced = float(item["local_synced"])  # type: ignore[arg-type]
+            if "error" in item:
+                status, kind = f"Errore: {str(item['error'])[:80]}", "danger"
+                portal_text = "—"
+            else:
+                portal_total = float(item["portal_total"])  # type: ignore[arg-type]
+                portal_text = f"{portal_total:g}h"
+                unlinked = item.get("unlinked") or []
+                if abs(portal_total - local_synced) < 1e-6:
+                    if local_total > local_synced:
+                        status, kind = f"Allineato · {local_total - local_synced:g}h ancora da inviare", "pending"
+                    else:
+                        status, kind = "Allineato", "synced"
+                elif portal_total > local_synced:
+                    status, kind = f"Sul portale {portal_total - local_synced:g}h in più (duplicati o voci dal web?)", "danger"
+                else:
+                    status, kind = f"Sul portale mancano {local_synced - portal_total:g}h", "danger"
+                posts_hours = float(item.get("posts_hours") or 0.0)  # type: ignore[arg-type]
+                if posts_hours and kind != "synced":
+                    status += f" · {posts_hours:g}h da messaggi"
+                if unlinked and kind == "danger":
+                    status += f" · voci non collegate: {'; '.join(str(u) for u in unlinked[:3])}"
+            if kind == "danger":
+                problems += 1
+            tk.Label(grid, text=ticket, font=F["body_bold"], bg=surface, fg=C["text"], anchor="w").grid(row=row_index, column=0, sticky="w", pady=3)
+            tk.Label(grid, text=f"{local_synced:g}h", font=F["body"], bg=surface, fg=C["text"], anchor="w").grid(row=row_index, column=1, sticky="w")
+            tk.Label(grid, text=portal_text, font=F["body"], bg=surface, fg=C["text"], anchor="w").grid(row=row_index, column=2, sticky="w")
+            status_label = pill(grid, status if len(status) <= 70 else status[:67] + "…", kind)
+            status_label.grid(row=row_index, column=3, sticky="w")
+            if len(status) > 70:
+                Tooltip(status_label, status)
+
+        extra = result.get("extra_times")
+        off_local = sum(
+            self._hours_from_worklog_row(row)
+            for row in self.work_logs
+            if self._is_off_entry(row) and str(row.get("month", "")) == self._get_summary_month()
+        )
+        summary = [
+            f"{len(results) - problems} ticket allineati, {problems} con differenze."
+            if problems
+            else f"Tutti i {len(results)} ticket sono allineati col portale."
+        ]
+        if links:
+            summary.append(f"Collegate {len(links)} righe alla loro voce sul portale: ora si possono aggiornare o cancellare da qui.")
+        if isinstance(extra, float):
+            summary.append(f"Extra Off: qui {off_local:g}h · sul portale {extra:g}h (dato get_times, da verificare nel Monthly Report).")
+        if result.get("cancelled"):
+            summary.append("Confronto interrotto: alcuni ticket non sono stati controllati.")
+        tk.Label(body, text="\n".join(summary), font=F["body"], bg=surface, fg=C["muted"], justify="left", anchor="w", wraplength=700).pack(fill="x", pady=(14, 0))
+
+        button(window.footer, "Apri log API", self._open_api_log, variant="ghost", parent_bg=surface).pack(side="left")
+        button(window.footer, "Chiudi", window.destroy, variant="primary").pack(side="right")
+        window.recenter()
 
     def _open_ticket_for_row(self, ticket: str) -> None:
         ticket_code = self._normalize_ticket_code(ticket)
@@ -2121,8 +2570,9 @@ class LoginWindow(tk.Tk):
             button(self.month_tag_slot, "Torna al mese corrente", lambda: self._set_dashboard_month(0), variant="ghost", size="sm", parent_bg=C["bg_app"]).pack()
 
         pending_rows = int(s["pending_rows"])
+        self.compare_btn.configure(state="disabled" if self.jobs.running else "normal")
         if self.jobs.running:
-            self.sync_month_btn.configure(text="Sincronizzazione…", state="disabled")
+            self.sync_month_btn.configure(text=f"{self.jobs.label.capitalize()}…" if self.jobs.label else "Sincronizzazione…", state="disabled")
         else:
             self.sync_month_btn.configure(
                 text=f"Sincronizza mese ({pending_rows})" if pending_rows else "Sincronizza mese",
@@ -2512,6 +2962,7 @@ class LoginWindow(tk.Tk):
             payload = self._build_extra_hours_payload_for_row(row, token)
             self.api_client.request_json("POST", "/api/extrahours/add", token, payload)
             self._mark_row_as_extra_hours_synced(row)
+            row["api_entry_id"] = str(payload.get("uuid", ""))
             return True
         except Exception as exc:  # noqa: BLE001 - expose payload and server error
             if self._is_api_lock_error(exc):
@@ -2824,7 +3275,76 @@ class LoginWindow(tk.Tk):
         self._start_sync_job(rows, scope_label)
 
     # ------------------------------------------------------------------ background sync
-    _SYNC_FIELDS = ("api_synced", "api_synced_at", "api_ticket_uuid", "api_month_displacement")
+    _SYNC_FIELDS = (
+        "api_synced",
+        "api_synced_at",
+        "api_ticket_uuid",
+        "api_month_displacement",
+        "api_entry_id",
+        "api_pending_action",
+        "api_prev_values",
+    )
+
+    # ------------------------------------------------------------------ portal entries (update / delete)
+    @property
+    def portal(self) -> PortalTickets:
+        # self.__dict__ instead of getattr: tk.Tk.__getattr__ recurses when the window is not initialised (tests).
+        portal = self.__dict__.get("_portal_tickets")
+        if portal is None or portal.client is not self.api_client:
+            portal = PortalTickets(self.api_client)
+            self._portal_tickets = portal
+        return portal
+
+    def _claimed_entry_ids(self, except_row: dict[str, str] | None = None) -> set[str]:
+        return {
+            str(row.get("api_entry_id", "")).upper()
+            for row in self.work_logs
+            if row is not except_row and str(row.get("api_entry_id", "")).strip()
+        }
+
+    def _portal_values_of(self, row: dict[str, str]) -> tuple[float, str]:
+        """Hours and reason as they are on the portal (before a local edit, if any)."""
+        prev: dict[str, str] = {}
+        raw_prev = str(row.get("api_prev_values", "")).strip()
+        if raw_prev:
+            try:
+                prev = json.loads(raw_prev)
+            except json.JSONDecodeError:
+                prev = {}
+        working_time = str(prev.get("working_time") or row.get("working_time", ""))
+        reason = str(prev.get("comment") or row.get("comment", "")).strip() or self._normalize_work_log(row)
+        parsed = self._parse_working_time(working_time)
+        return (parsed[1] if parsed else 0.0), reason
+
+    def _lookup_entry_id(self, token: str, ticket_uuid: str, row: dict[str, str]) -> str:
+        """Find the portal Id of a row synced before Ids were stored (working_hours/list)."""
+        hours, reason = self._portal_values_of(row)
+        entries = self.portal.list_working_hours(token, ticket_uuid)
+        entry_id = find_entry_id(
+            entries,
+            username=self.credentials["username"],
+            month_label=str(row.get("month", "")),
+            hours=hours,
+            reason=reason,
+            exclude_ids=self._claimed_entry_ids(except_row=row),
+        )
+        api_log.event(
+            f"    cerco la voce sul portale ({len(entries)} voci sul ticket, {hours:g}h, \"{reason[:60]}\") → "
+            + (f"Id {entry_id}" if entry_id else "non trovata")
+        )
+        return entry_id
+
+    def _portal_entry_kind(self, row: dict[str, str]) -> str:
+        """How a synced row exists on the portal: "entry" (working_hours, updatable), "off", "web" or ""."""
+        if not (self._is_worklog_synced(row) or row.get("api_pending_action") == "update"):
+            return ""
+        if self._is_off_entry(row):
+            return "off"
+        if str(row.get("api_post_uuid", "")).strip():
+            return "web"
+        if str(row.get("entry_type", "work")) in ALREADY_SYNCED_TYPES:
+            return "web"
+        return "entry"
 
     def _sync_row_with_portal(self, token: str, row: dict[str, str]) -> None:
         """Send one row to the portal and mark *that dict* as synced. Runs on the worker thread:
@@ -2839,8 +3359,23 @@ class LoginWindow(tk.Tk):
                 self._sync_extra_hours_row(token, row)
             else:
                 resolved_uuid, payload = self._build_api_payload_for_row(row, token)
-                self.api_client.request_json("POST", "/api/working_hours/form", token, payload)
+                entry_id = ""
+                if row.get("api_pending_action") == "update":
+                    entry_id = str(row.get("api_entry_id", "")).strip() or self._lookup_entry_id(token, resolved_uuid, row)
+                    if not entry_id:
+                        raise RuntimeError(
+                            "voce da aggiornare non trovata sul portale. Controlla il ticket dal web oppure usa "
+                            "“Invia come nuova voce” dal menu ⋯ della riga."
+                        )
+                    payload["Id"] = entry_id
+                    api_log.event(f"    aggiorno la voce esistente Id {entry_id} (nessun duplicato)")
+                response = self.api_client.request_json("POST", "/api/working_hours/form", token, payload)
                 self._mark_row_as_synced(row, resolved_uuid, payload["MonthDisplacement"])
+                returned_payload = getattr(response, "payload", None)
+                returned = returned_payload if isinstance(returned_payload, str) else ""
+                row["api_entry_id"] = returned.strip().upper() if self._is_uuid(returned) else entry_id.upper()
+                row["api_pending_action"] = ""
+                row["api_prev_values"] = ""
         except Exception as exc:
             api_log.event(f"    ESITO: ERRORE · {exc}")
             raise
@@ -3074,7 +3609,7 @@ class LoginWindow(tk.Tk):
         if id(row) in self.rows_in_flight:
             self._toast("Riga in invio al portale: modificala a sync finito", "info")
             return
-        was_synced = self._is_worklog_synced(row)
+        kind = self._portal_entry_kind(row)
 
         window = Modal(self, f"Modifica riga · {row.get('ticket', '')}", width=620)
         body = window.body
@@ -3091,20 +3626,36 @@ class LoginWindow(tk.Tk):
         worklog_text.pack(fill="x")
         worklog_text.insert("1.0", self._normalize_work_log(row))
 
-        resend_var = tk.StringVar(value="local")
-        if was_synced:
+        mode_var = tk.StringVar(value="local")
+        options_spec: list[tuple[str, str]] = []
+        note = ""
+        if kind == "entry":
+            mode_var.set("update")
+            options_spec = [
+                ("update", "Aggiorna anche sul portale: la voce esistente viene modificata (nessun duplicato)"),
+                ("local", "Correggi solo qui: il portale resta com'è"),
+            ]
+        elif kind == "off":
+            options_spec = [
+                ("local", "Correggi solo qui: il portale resta com'è"),
+                ("resend", "Rimanda al portale: crea una seconda voce Extra Off (cancella prima quella vecchia dal web)"),
+            ]
+        elif kind == "web":
+            note = (
+                "Queste ore sono state registrate dal web o con un messaggio sul ticket: "
+                "qui cambia solo la copia locale, sul portale vanno modificate dalla pagina del ticket."
+            )
+
+        if options_spec:
             field_label(body, "Questa riga è già sul portale").pack(anchor="w", pady=(16, 6))
             options = tk.Frame(body, bg=C["surface"])
             options.pack(fill="x")
-            for value, text in (
-                ("local", "Correggi solo qui: resta “Sincronizzata”, il portale non cambia"),
-                ("resend", "Rimanda al portale: torna “Da sincronizzare” (crea una seconda voce)"),
-            ):
+            for value, text in options_spec:
                 tk.Radiobutton(
                     options,
                     text=text,
                     value=value,
-                    variable=resend_var,
+                    variable=mode_var,
                     font=F["body"],
                     fg=C["text"],
                     bg=C["surface"],
@@ -3113,23 +3664,13 @@ class LoginWindow(tk.Tk):
                     selectcolor=C["raised"],
                     highlightthickness=0,
                     anchor="w",
+                    wraplength=560,
+                    justify="left",
                 ).pack(fill="x", pady=1)
-            warn = tk.Frame(body, bg=C["warn_bg"], padx=12, pady=8)
-            warn.pack(fill="x", pady=(10, 0))
-            glyph, glyph_font = icon("warning")
-            tk.Label(warn, text=glyph, font=glyph_font, bg=C["warn_bg"], fg=C["warn"]).pack(side="left", anchor="n")
-            tk.Label(
-                warn,
-                text=(
-                    "Il portale non permette di aggiornare una voce già inviata. Se scegli di rimandarla, "
-                    "cancella prima quella vecchia dal web: al momento dell'invio l'app te lo ricorderà."
-                ),
-                font=F["body"],
-                bg=C["warn_bg"],
-                fg=C["warn"],
-                wraplength=520,
-                justify="left",
-            ).pack(side="left", padx=(8, 0))
+        if note:
+            info = tk.Frame(body, bg=C["off_bg"], padx=12, pady=8)
+            info.pack(fill="x", pady=(14, 0))
+            tk.Label(info, text=note, font=F["body"], bg=C["off_bg"], fg="#c9daff", wraplength=540, justify="left").pack(anchor="w")
 
         error_label = tk.Label(body, text="", font=F["body"], bg=C["surface"], fg=C["danger"])
         error_label.pack(anchor="w", pady=(8, 0))
@@ -3143,8 +3684,8 @@ class LoginWindow(tk.Tk):
             if not work_log:
                 error_label.configure(text="Il work log è obbligatorio.")
                 return
-            resend = (not was_synced) or resend_var.get() == "resend"
-            self._save_log_edit(index, hours_value, work_log, window, resend=resend)
+            mode = mode_var.get() if kind else "pending"
+            self._save_log_edit(index, hours_value, work_log, window, mode=mode)
 
         button(window.footer, "Salva", save, variant="primary").pack(side="right")
         button(window.footer, "Annulla", window.destroy).pack(side="right", padx=(0, 10))
@@ -3152,7 +3693,19 @@ class LoginWindow(tk.Tk):
         hours_entry.focus_set()
         window.recenter()
 
-    def _save_log_edit(self, index: int, hours: str, work_log: str, window: tk.Toplevel, *, resend: bool = True) -> None:
+    def _save_log_edit(
+        self,
+        index: int,
+        hours: str,
+        work_log: str,
+        window: tk.Toplevel,
+        *,
+        resend: bool = True,
+        mode: str | None = None,
+    ) -> None:
+        """mode: "local" (portal untouched), "update" (next sync updates the portal entry),
+        "resend" (next sync creates a new entry, duplicate warning) or "pending" (row not synced yet).
+        Without mode, resend=True/False maps to "resend"/"local" (older callers)."""
         if index < 0 or index >= len(self.work_logs):
             return
 
@@ -3165,14 +3718,28 @@ class LoginWindow(tk.Tk):
             messagebox.showerror("Errore", "Il work log è obbligatorio.", parent=window)
             return
 
-        working_time_label, _hours = parsed
         row = self.work_logs[index]
         was_synced = self._is_worklog_synced(row)
+        if mode is None:
+            mode = ("resend" if resend else "local") if was_synced else "pending"
+
+        if mode == "update" and not str(row.get("api_prev_values", "")).strip():
+            # Keep the values that are on the portal, to find the entry if its Id is unknown.
+            row["api_prev_values"] = json.dumps(
+                {"working_time": row.get("working_time", ""), "comment": row.get("comment", "")},
+                ensure_ascii=False,
+            )
+
+        working_time_label, _hours = parsed
         row["working_time"] = working_time_label
         row["work_log"] = work_log
         row["comment"] = work_log
 
-        if resend:
+        if mode == "update":
+            row["api_pending_action"] = "update"
+            row["api_synced"] = ""
+            row["api_synced_at"] = ""
+        elif mode == "resend":
             if was_synced:
                 # Remember the previous sync so the next send asks about duplicates.
                 row["api_resend_of"] = str(row.get("api_synced_at", "")) or datetime.now().astimezone().isoformat(timespec="seconds")
@@ -3180,14 +3747,28 @@ class LoginWindow(tk.Tk):
             row["api_synced_at"] = ""
             row["api_ticket_uuid"] = ""
             row["api_month_displacement"] = ""
+            row["api_entry_id"] = ""
+            row["api_pending_action"] = ""
 
         save_work_logs(self.work_logs)
         self._render_worklogs()
         window.destroy()
-        if resend:
-            self._toast("Riga aggiornata · da sincronizzare")
-        else:
-            self._toast("Riga corretta solo in locale · resta sincronizzata")
+        messages = {
+            "update": "Riga modificata · al prossimo sync aggiorno la voce sul portale",
+            "resend": "Riga aggiornata · da sincronizzare come nuova voce",
+            "local": "Riga corretta solo in locale",
+            "pending": "Riga aggiornata · da sincronizzare",
+        }
+        self._toast(messages.get(mode, "Riga aggiornata"))
+
+    def _send_as_new_entry(self, row: dict[str, str]) -> None:
+        """Give up updating the portal entry: the next sync creates a new one (duplicate warning)."""
+        row["api_resend_of"] = str(row.get("api_synced_at", "")) or datetime.now().astimezone().isoformat(timespec="seconds")
+        for key in ("api_pending_action", "api_prev_values", "api_entry_id", "api_ticket_uuid", "api_month_displacement"):
+            row[key] = ""
+        save_work_logs(self.work_logs)
+        self._render_worklogs()
+        self._toast("La riga verrà inviata come nuova voce", "info")
 
     def _remove_worklog(self, index: int) -> None:
         if index < 0 or index >= len(self.work_logs):
@@ -3197,21 +3778,79 @@ class LoginWindow(tk.Tk):
         if id(row) in self.rows_in_flight:
             self._toast("Riga in invio al portale: rimuovila a sync finito", "info")
             return
-        question = (
-            f"Rimuovere la riga {row.get('ticket', '')} · {row.get('working_time', '')} "
-            f"del {self._format_row_date(row)}?\n\n"
-        )
-        if self._is_worklog_synced(row):
-            question += "La riga è già sul portale: verrà rimossa solo da qui, non dal web."
+        title = f"{row.get('ticket', '')} · {row.get('working_time', '')} del {self._format_row_date(row)}"
+        kind = self._portal_entry_kind(row)
+
+        if kind == "entry":
+            answer = messagebox.askyesnocancel(
+                "Rimuovi riga",
+                f"Rimuovere {title}?\n\n"
+                "La voce è anche sul portale.\n\n"
+                "Sì = rimuovi qui e cancella la voce dal portale\n"
+                "No = rimuovi solo da qui (sul portale resta)\n"
+                "Annulla = non fare nulla",
+                icon="warning",
+            )
+            if answer is None:
+                return
+            if answer:
+                self._start_portal_delete(row)
+                return
         else:
-            question += "La riga non è ancora stata inviata al portale."
-        if not messagebox.askyesno("Rimuovi riga", question, icon="warning"):
-            return
+            question = f"Rimuovere {title}?\n\n"
+            if kind == "off":
+                question += "È un Extra Off già inviato: verrà rimosso solo da qui, sul portale va cancellato dal web."
+            elif kind == "web":
+                question += "Le ore sono sul portale come voce web o messaggio: verranno rimosse solo da qui."
+            else:
+                question += "La riga non è ancora stata inviata al portale."
+            if not messagebox.askyesno("Rimuovi riga", question, icon="warning"):
+                return
 
         self.work_logs.pop(index)
         save_work_logs(self.work_logs)
         self._render_worklogs()
         self._toast("Riga rimossa", "info")
+
+    def _start_portal_delete(self, row: dict[str, str]) -> None:
+        if self.jobs.running:
+            self._toast(f"Attendi: {self.jobs.label} in corso", "info")
+            return
+        snapshot = dict(row)
+        ticket = str(row.get("ticket", ""))
+        self.rows_in_flight = {id(row)}
+
+        def worker(_emit: object, _cancel: object) -> str:
+            api_log.event(f"=== Cancellazione dal portale: {ticket} · {snapshot.get('log_date', '')} · {snapshot.get('working_time', '')} ===")
+            token = self._ensure_api_session()
+            ticket_reference = str(snapshot.get("api_ticket_uuid", "")).strip() or ticket
+            ticket_uuid = self._resolve_ticket_uuid_cached(token, ticket_reference)
+            entry_id = str(snapshot.get("api_entry_id", "")).strip() or self._lookup_entry_id(token, ticket_uuid, snapshot)
+            if not entry_id:
+                raise RuntimeError("voce non trovata sul portale: cancellala dalla pagina del ticket.")
+            self.portal.delete_working_hours(token, entry_id)
+            remaining = {str(item.get("Id", "")).upper() for item in self.portal.list_working_hours(token, ticket_uuid)}
+            if entry_id.upper() in remaining:
+                raise RuntimeError(f"il portale ha risposto ma la voce {entry_id} è ancora presente.")
+            api_log.event(f"    ESITO: OK · voce {entry_id} cancellata")
+            return entry_id
+
+        def on_finish(result: object, error: BaseException | None) -> None:
+            self.rows_in_flight = set()
+            self.toast.hide_progress()
+            if error is not None:
+                api_log.event(f"    ESITO: ERRORE · {error}")
+                self._render_worklogs()
+                self._notify_error(f"Cancellazione {ticket} non riuscita", error)
+                return
+            self.work_logs[:] = [item for item in self.work_logs if item is not row]
+            save_work_logs(self.work_logs)
+            self._render_worklogs()
+            self._toast(f"{ticket}: voce cancellata dal portale e rimossa da qui")
+
+        self.jobs.start(f"cancellazione {ticket}", worker, on_event=lambda *_: None, on_finish=on_finish)
+        self.toast.progress(f"Cancello la voce {ticket} dal portale…", 0, 1)
+        self._render_worklogs()
 
 
 def run_app() -> None:

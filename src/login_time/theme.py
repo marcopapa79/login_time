@@ -77,6 +77,8 @@ _ICON_GLYPHS = {
     "info": ("", "i"),
     "eye": ("", "◉"),
     "delete": ("", "✕"),
+    "chat": ("\ue8bd", "✉"),
+    "refresh": ("\ue72c", "⟳"),
 }
 
 _icon_font: tuple | None = None

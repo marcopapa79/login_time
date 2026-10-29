@@ -132,7 +132,13 @@ class SyncRowTests(unittest.TestCase):
         window = object.__new__(LoginWindow)
         sent = []
         window.api_client = mock.Mock()
-        window.api_client.request_json.side_effect = lambda *args: sent.append(args)
+        from login_time.api_client import ApiResponse
+
+        def fake_request(*args):
+            sent.append(args)
+            return ApiResponse(200, "0d71e4a4-cfce-4fea-8136-3b895dfbb624", "")
+
+        window.api_client.request_json.side_effect = fake_request
         window._build_api_payload_for_row = lambda row, token: ("UUID-1", {"MonthDisplacement": "-1"})
         window._cache_ticket_uuid = lambda *_a: None
         row = {"ticket": "QUIX-707", "entry_type": "work", "api_synced": ""}
@@ -144,6 +150,7 @@ class SyncRowTests(unittest.TestCase):
         self.assertEqual(row["api_synced"], "true")
         self.assertEqual(row["api_ticket_uuid"], "UUID-1")
         self.assertEqual(row["api_month_displacement"], "-1")
+        self.assertEqual(row["api_entry_id"], "0D71E4A4-CFCE-4FEA-8136-3B895DFBB624")
 
 
 class TicketResolutionTests(unittest.TestCase):

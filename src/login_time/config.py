@@ -158,6 +158,14 @@ def load_work_logs() -> list[dict[str, str]]:
                 # Set when a row already on the portal was edited and queued again:
                 # holds the previous sync timestamp so the app can warn about duplicates.
                 "api_resend_of": str(item.get("api_resend_of", "")),
+                # Id of the entry on the portal (working_hours/form response), used to update/delete it.
+                "api_entry_id": str(item.get("api_entry_id", "")),
+                # Set when the hours were sent as a ticket message (ticket_posts/create).
+                "api_post_uuid": str(item.get("api_post_uuid", "")),
+                # "update" = edited after sync, the next sync updates the existing portal entry.
+                "api_pending_action": str(item.get("api_pending_action", "")),
+                # JSON with the values still on the portal, to find the entry when its Id is unknown.
+                "api_prev_values": str(item.get("api_prev_values", "")),
             }
         )
     return entries
