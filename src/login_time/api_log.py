@@ -81,7 +81,7 @@ def response(path: str, status: int | None, raw_text: str, error: str = "") -> N
     if path.startswith("/api/login"):
         log.info(f"    ← HTTP {status} (risposta di login non registrata: contiene il token)")
         return
-    limit = _MAX_LIST_RESPONSE if "/tickets/list" in path else _MAX_BODY
+    limit = _MAX_LIST_RESPONSE if ("/tickets/list" in path or "/search/jql" in path) else _MAX_BODY
     log.info(f"    ← HTTP {status}  {_short(raw_text, limit) if raw_text.strip() else '(risposta vuota)'}")
 
 

@@ -18,6 +18,10 @@ locally and sync it to Quixant Hub (`https://support.quixant.com`) through its A
 - Ticket conversation window (✉ on the ticket card): read public/internal messages, send an internal note or a reply to the customer with hours
 - "Confronta col portale": per-ticket comparison of local hours vs portal for the month; links old rows to their portal entry
 - Debug log of every API call in `logs/api_sync.log` (profile menu → "Apri log API"); API notes in `docs/portal-api.md`
+- **Jira page** (switch "Ore · Hub | Jira" in the top bar, Ctrl+1 / Ctrl+2): my Jira Cloud issues
+  (to do, done in the last 30 days, reported by me, watching), issue details with description and
+  comments, log work, add a comment, change status. Uses a personal Atlassian API token, so no
+  Microsoft / Duo login inside the app. Notes in `docs/jira.md`
 
 ## Run
 From the project root:
@@ -40,6 +44,9 @@ or double-click `login_time.bat`.
 - Profile menu → "Dimentica la password su questo PC" deletes the saved copy.
 - `logs/api_sync.log` masks password and token (`***`). Details: `docs/SECURITY.md`.
 - Fallback without Credential Manager: password in `credentials.json` (git-ignored).
+- Jira: the Atlassian API token goes to Credential Manager (entry `login_time/jira:quixantplc.atlassian.net`);
+  `jira_settings.json` (git-ignored) keeps only site and email. On Windows the token is never written
+  to a file: if Credential Manager refuses it, it is used for the session only.
 
 ## Files
 - `worklogs.json` – local worklog rows
@@ -47,6 +54,8 @@ or double-click `login_time.bat`.
 - `docs/DESIGN_BRIEF.md` – UI brief and rationale of the technical choices
 - `docs/extra-off-api.md` – verified Extra Off API flow
 - `docs/SECURITY.md` – how password and token are handled, comparison with the browser, limits and checks
+- `docs/jira.md` – Jira page: how to create the API token, endpoints used, troubleshooting
+- `jira_settings.json` – Jira site + email (git-ignored, no token inside)
 
 ## Local data
 `worklogs.json`, `ticket_uuid_cache.json` and `credentials.json` are git-ignored:

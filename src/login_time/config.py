@@ -132,6 +132,65 @@ def forget_saved_password() -> bool:
     return removed
 
 
+# ---------------------------------------------------------------- Jira Cloud
+
+DEFAULT_JIRA_SITE = "https://quixantplc.atlassian.net"
+_JIRA_SETTINGS_FILE = _PROJECT_DIR / "jira_settings.json"
+
+
+def _jira_target(site: str) -> str:
+    host = site.replace("https://", "").replace("http://", "").strip("/").lower()
+    return credentials_store.JIRA_TARGET_PREFIX + host
+
+
+def _read_jira_file() -> Dict[str, str]:
+    if not _JIRA_SETTINGS_FILE.exists():
+        return {}
+    try:
+        raw = json.loads(_JIRA_SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+
+
+def load_jira_settings() -> tuple[str, str, bool]:
+    """(site, email, a token is saved). The token itself is read only when connecting."""
+    data = _read_jira_file()
+    site = data.get("site") or DEFAULT_JIRA_SITE
+    email = data.get("email", "")
+    return site, email, bool(load_jira_token(site))
+
+
+def load_jira_token(site: str) -> str:
+    if credentials_store.is_supported():
+        stored = credentials_store.read_credential(_jira_target(site))
+        return stored[1] if stored else ""
+    return _read_jira_file().get("token", "")
+
+
+def save_jira_settings(site: str, email: str, token: str) -> None:
+    """site + email in jira_settings.json (git-ignored), token in Windows Credential Manager."""
+    payload: Dict[str, str] = {"site": site, "email": email}
+    if credentials_store.is_supported():
+        # Windows: the token goes ONLY to Credential Manager; never fall back to a clear-text file.
+        if not credentials_store.write_credential(
+            email, token, target=_jira_target(site), comment="login_time - Jira Cloud API token"
+        ):
+            raise RuntimeError("Gestore credenziali di Windows non disponibile")
+    else:
+        payload["token"] = token  # only off Windows (development/tests), file is git-ignored
+    _atomic_write(_JIRA_SETTINGS_FILE, json.dumps(payload, indent=2))
+
+
+def forget_jira_token(site: str) -> None:
+    if credentials_store.is_supported():
+        credentials_store.delete_credential(_jira_target(site))
+    data = _read_jira_file()
+    data.pop("token", None)
+    if data:
+        _atomic_write(_JIRA_SETTINGS_FILE, json.dumps(data, indent=2))
+
+
 def save_credentials(username: str, password: str) -> None:
     """Persist credentials for next app openings (password in Credential Manager when available)."""
     if credentials_store.is_supported() and credentials_store.write_credential(username, password):

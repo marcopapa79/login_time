@@ -12,6 +12,8 @@ from __future__ import annotations
 import sys
 
 TARGET_NAME = "login_time/support.quixant.com"
+# Jira Cloud API token (see jira_client.py); one entry per site.
+JIRA_TARGET_PREFIX = "login_time/jira:"
 
 _CRED_TYPE_GENERIC = 1
 _CRED_PERSIST_LOCAL_MACHINE = 2
@@ -67,12 +69,12 @@ def is_supported() -> bool:
     return _AVAILABLE
 
 
-def read_credential() -> tuple[str, str] | None:
-    """Return (username, password) or None if nothing is stored."""
+def read_credential(target: str = TARGET_NAME) -> tuple[str, str] | None:
+    """Return (username, secret) or None if nothing is stored."""
     if not _AVAILABLE:
         return None
     pointer = _PCREDENTIALW()
-    if not _CredReadW(TARGET_NAME, _CRED_TYPE_GENERIC, 0, ctypes.byref(pointer)):
+    if not _CredReadW(target, _CRED_TYPE_GENERIC, 0, ctypes.byref(pointer)):
         return None
     try:
         cred = pointer.contents
@@ -85,7 +87,7 @@ def read_credential() -> tuple[str, str] | None:
         _CredFree(pointer)
 
 
-def write_credential(username: str, password: str) -> bool:
+def write_credential(username: str, password: str, target: str = TARGET_NAME, comment: str = "login_time - Quixant Hub") -> bool:
     """Create or replace the stored credential. Returns False on failure."""
     if not _AVAILABLE:
         return False
@@ -94,8 +96,8 @@ def write_credential(username: str, password: str) -> bool:
     cred = _CREDENTIALW()
     cred.Flags = 0
     cred.Type = _CRED_TYPE_GENERIC
-    cred.TargetName = TARGET_NAME
-    cred.Comment = "login_time - Quixant Hub"
+    cred.TargetName = target
+    cred.Comment = comment
     cred.CredentialBlobSize = len(blob_bytes)
     cred.CredentialBlob = ctypes.cast(blob, ctypes.POINTER(ctypes.c_ubyte))
     cred.Persist = _CRED_PERSIST_LOCAL_MACHINE
@@ -106,9 +108,9 @@ def write_credential(username: str, password: str) -> bool:
     return bool(_CredWriteW(ctypes.byref(cred), 0))
 
 
-def delete_credential() -> bool:
+def delete_credential(target: str = TARGET_NAME) -> bool:
     if not _AVAILABLE:
         return False
-    if _CredDeleteW(TARGET_NAME, _CRED_TYPE_GENERIC, 0):
+    if _CredDeleteW(target, _CRED_TYPE_GENERIC, 0):
         return True
     return ctypes.get_last_error() == _ERROR_NOT_FOUND

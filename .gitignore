@@ -7,3 +7,4 @@ ticket_uuid_cache.json
 .venv/
 *.tmp
 logs/
+jira_settings.json

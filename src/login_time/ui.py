@@ -26,6 +26,7 @@ from .config import (
     save_ticket_uuid_cache,
     save_work_logs,
 )
+from .jira_page import JiraPage
 from .jobs import JobRunner
 from .portal import PortalTickets, find_entry_id, html_to_text, portal_hours
 from .theme import (
@@ -165,6 +166,10 @@ class LoginWindow(tk.Tk):
         self._clear_window()
         self.worklog_rows = None
         self.worklog_canvas = None
+        self.jira_page = None
+        self.page_var = None
+        self.unbind("<Control-Key-1>")
+        self.unbind("<Control-Key-2>")
         self.kpi_labels = {}
         self.filter_buttons = {}
         self.unbind("<Control-n>")
@@ -290,10 +295,17 @@ class LoginWindow(tk.Tk):
         shell = tk.Frame(self, bg=C["bg_app"])
         shell.pack(fill="both", expand=True)
 
+        # Two pages share the window: "Ore" (Quixant Hub hours) and "Jira" (my Jira issues).
+        self.jira_page = None
+        self.page_var = tk.StringVar(value="ore")
+        self.page_var.trace_add("write", lambda *_: self._apply_page())
         self._build_topbar(shell, username)
 
-        main = tk.Frame(shell, bg=C["bg_app"], padx=24, pady=16)
+        self.page_host = tk.Frame(shell, bg=C["bg_app"])
+        self.page_host.pack(fill="both", expand=True)
+        main = tk.Frame(self.page_host, bg=C["bg_app"], padx=24, pady=16)
         main.pack(fill="both", expand=True)
+        self.ore_page = main
         self._build_month_bar(main)
         self._build_kpi_panel(main)
         self._build_filter_row(main)
@@ -302,7 +314,31 @@ class LoginWindow(tk.Tk):
         self.bind_all("<MouseWheel>", self._scroll_rotellina)
         self.bind("<Control-n>", lambda _e: self._open_worklog_window())
         self.bind("<Control-t>", lambda _e: self._open_ticket_window())
+        self.bind("<Control-Key-1>", lambda _e: self._switch_page("ore"))
+        self.bind("<Control-Key-2>", lambda _e: self._switch_page("jira"))
         self._render_worklogs()
+
+    def _switch_page(self, page: str) -> None:
+        page_var = self.__dict__.get("page_var")
+        if page_var is not None and page_var.get() != page:
+            page_var.set(page)  # the trace calls _apply_page
+
+    def _apply_page(self) -> None:
+        """Show the "Ore" page or the "Jira" page (built the first time it is opened)."""
+        page_var = self.__dict__.get("page_var")
+        if page_var is None or not self.ore_page.winfo_exists():
+            return
+        if page_var.get() == "jira":
+            self.ore_page.pack_forget()
+            self.ore_tools.pack_forget()
+            if self.jira_page is None or not self.jira_page.winfo_exists():
+                self.jira_page = JiraPage(self.page_host, self)
+            self.jira_page.pack(fill="both", expand=True)
+        else:
+            if self.jira_page is not None and self.jira_page.winfo_exists():
+                self.jira_page.pack_forget()
+            self.ore_tools.pack(side="right")
+            self.ore_page.pack(fill="both", expand=True)
 
     def _build_topbar(self, parent: tk.Misc, username: str) -> None:
         surface = C["surface"]
@@ -314,6 +350,12 @@ class LoginWindow(tk.Tk):
         brand.pack(side="left")
         tk.Label(brand, text="QUIXANT", font=F["brand"], fg=C["accent"], bg=surface).pack(side="left")
         label(brand, "login_time", kind="muted", bg=surface).pack(side="left", padx=(10, 0))
+
+        switch = Segmented(bar, self.page_var, [("ore", "Ore · Hub"), ("jira", "Jira")], bg=surface)
+        for page_button in switch.buttons.values():
+            page_button.configure(padx=16, pady=4)
+        switch.pack(side="left", padx=(24, 0))
+        Tooltip(switch, "Ore sul portale Quixant (Ctrl+1) · issue Jira (Ctrl+2)")
 
         name_part = username.split("@")[0] if username else "marco.papa"
         pieces = [p for p in re.split(r"[._\-]", name_part) if p]
@@ -337,12 +379,16 @@ class LoginWindow(tk.Tk):
         avatar.pack(side="right")
         Tooltip(avatar, "Profilo e strumenti")
 
-        button(bar, "Monthly Report ↗", self._open_monthly_report, parent_bg=surface).pack(side="right", padx=(0, 12))
-        open_ticket_btn = button(bar, "Apri ticket…", self._open_ticket_window, parent_bg=surface)
+        # Tools of the "Ore" page only: hidden while the Jira page is shown.
+        self.ore_tools = tk.Frame(bar, bg=surface)
+        self.ore_tools.pack(side="right")
+        tools = self.ore_tools
+        button(tools, "Monthly Report ↗", self._open_monthly_report, parent_bg=surface).pack(side="right", padx=(0, 12))
+        open_ticket_btn = button(tools, "Apri ticket…", self._open_ticket_window, parent_bg=surface)
         open_ticket_btn.pack(side="right", padx=(0, 12))
         Tooltip(open_ticket_btn, "Apri un ticket qualsiasi nella conversazione (Ctrl+T)")
 
-        search_box = tk.Frame(bar, bg=C["raised"], highlightthickness=1, highlightbackground=C["border"])
+        search_box = tk.Frame(tools, bg=C["raised"], highlightthickness=1, highlightbackground=C["border"])
         search_box.pack(side="right", padx=(0, 12))
         glyph, glyph_font = icon("search")
         tk.Label(search_box, text=glyph, font=glyph_font, bg=C["raised"], fg=C["muted"]).pack(side="left", padx=(8, 0))
@@ -512,8 +558,14 @@ class LoginWindow(tk.Tk):
     def _scroll_rotellina(self, event: tk.Event) -> None:
         try:
             top = event.widget.winfo_toplevel()
-            # Main window scrolls the worklog list; a secondary window may expose its own scroll_canvas.
-            canvas = self.worklog_canvas if top is self else getattr(top, "scroll_canvas", None)
+            # Main window scrolls the visible page; a secondary window may expose its own scroll_canvas.
+            if top is self:
+                jira = self.__dict__.get("jira_page")
+                page_var = self.__dict__.get("page_var")
+                on_jira = jira is not None and page_var is not None and page_var.get() == "jira"
+                canvas = jira.scroll_canvas if on_jira else self.worklog_canvas
+            else:
+                canvas = getattr(top, "scroll_canvas", None)
             if canvas is None or not canvas.winfo_exists():
                 return
             # Su Windows ogni "scatto" della rotellina vale delta = 120
@@ -564,6 +616,9 @@ class LoginWindow(tk.Tk):
 
     def _clear_session_secrets(self) -> None:
         """Forget the password and the portal token held in memory (the saved copy stays)."""
+        jira = self.__dict__.get("jira_page")
+        if jira is not None:
+            jira.forget_session()  # Jira token out of memory too (the saved copy stays)
         self.api_token = ""
         self.api_token_user = ""
         self.clockify_user_uuid = ""

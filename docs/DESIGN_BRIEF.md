@@ -203,6 +203,9 @@ Giorni lun–ven esclusi i festivi italiani (Pasqua calcolata con l'algoritmo gr
 ### Modifica di una riga = torna "pending"
 [ui.py](../src/login_time/ui.py#L2548) azzera lo stato sync dopo un edit, così la modifica può essere reinviata.
 
+### Pagina Jira con API token invece del login Microsoft + Duo
+Il selettore "Ore · Hub | Jira" in alto (Ctrl+1 / Ctrl+2) alterna due pagine nella stessa finestra; la pagina Jira è costruita la prima volta che la apri. Il single sign-on aziendale (Microsoft → password → Duo) è pensato per il browser: automatizzarlo vorrebbe dire maneggiare la password Microsoft e aggirare la MFA. Atlassian documenta invece gli **API token personali** (email + token in HTTP Basic), creati una volta dopo il login normale, revocabili e con scadenza. Un token "con scope" funziona solo tramite il gateway `api.atlassian.com/ex/jira/<cloudId>`: [jira_client.py](../src/login_time/jira_client.py) lo rileva da solo. La ricerca usa `POST /rest/api/3/search/jql`, perché il vecchio `/search` è stato rimosso. Il codice UI sta in un modulo separato ([jira_page.py](../src/login_time/jira_page.py)) per non far crescere `ui.py`. Dettagli in [jira.md](jira.md).
+
 ---
 
 ## 8. Limiti e rischi da conoscere
