@@ -15,6 +15,8 @@ from . import api_log
 from .api_client import QuixantHubClient
 from .config import (
     credentials_storage_label,
+    forget_saved_password,
+    load_saved_username,
     get_clockify_tasks,
     get_clockify_task_id,
     load_credentials,
@@ -97,7 +99,10 @@ class LoginWindow(tk.Tk):
         self.worklog_rows: tk.Frame | None = None
         self.worklog_canvas: tk.Canvas | None = None
         self.worklog_canvas_window: int | None = None
-        self.credentials = load_credentials()
+        # Only the email is kept in memory until login: the password is read from the
+        # Credential Manager when you press ACCEDI (see _handle_login).
+        saved_username, self.has_saved_password = load_saved_username()
+        self.credentials = {"username": saved_username, "password": ""}
         self.api_client = QuixantHubClient()
         self.api_token = ""
         self.api_token_user = ""
@@ -196,7 +201,7 @@ class LoginWindow(tk.Tk):
             highlightthickness=0,
         )
         self.pass_entry.pack(side="left", fill="x", expand=True)
-        self.pass_entry.insert(0, self.credentials["password"])
+        # Never prefilled: with a saved password the field stays empty and the saved one is used.
         self.pass_entry.bind("<FocusIn>", lambda _e: pw_row.configure(highlightbackground=C["accent"]))
         self.pass_entry.bind("<FocusOut>", lambda _e: pw_row.configure(highlightbackground=C["border"]))
 
@@ -205,7 +210,17 @@ class LoginWindow(tk.Tk):
 
         icon_button(pw_row, "eye", toggle_password, parent_bg=C["raised"], tooltip="Mostra / nascondi password").pack(side="right", padx=2)
 
-        self.remember_var = tk.BooleanVar(value=not self.credentials.get("password"))
+        if self.has_saved_password:
+            saved_hint = tk.Label(
+                card,
+                text="✓ Password salvata: lascia il campo vuoto per usarla",
+                font=F["small"],
+                bg=surface,
+                fg=C["ok"],
+                anchor="w",
+            )
+            saved_hint.pack(anchor="w", pady=(6, 0))
+        self.remember_var = tk.BooleanVar(value=not self.has_saved_password)
         checkbox(card, "Ricorda le credenziali su questo PC", self.remember_var, bg=surface).pack(anchor="w", pady=(14, 0))
 
         self.login_error = label(card, "", bg=surface, fg=C["danger"], wraplength=340)
@@ -214,7 +229,12 @@ class LoginWindow(tk.Tk):
         button(card, "ACCEDI", self._handle_login, variant="primary", size="lg").pack(fill="x", pady=(10, 0))
         label(
             card,
-            f"Password salvata in: {credentials_storage_label()}.\nLa connessione al portale avviene al primo sync.",
+            (
+                f"Password salvata nel {credentials_storage_label()}, mai mostrata qui.\n"
+                if self.has_saved_password
+                else f"Con “Ricorda” la password va nel {credentials_storage_label()}.\n"
+            )
+            + "La connessione al portale avviene al primo sync.",
             kind="subtle",
             bg=surface,
         ).pack(anchor="w", pady=(14, 0))
@@ -225,36 +245,39 @@ class LoginWindow(tk.Tk):
 
     def _handle_login(self) -> None:
         username = self.user_entry.get().strip()
-        password = self.pass_entry.get().strip()
+        typed_password = self.pass_entry.get().strip()
+        remember = bool(self.remember_var.get())
 
-        if not username or not password:
-            self.login_error.configure(text="Inserisci email e password.")
+        if not username:
+            self.login_error.configure(text="Inserisci l'email.")
             return
 
-        has_saved_password = bool(self.credentials.get("password"))
-        matches = username == self.credentials["username"] and password == self.credentials["password"]
-        remember = bool(self.remember_var.get())
-        if not has_saved_password:
-            # Nothing stored yet (first run): use what was typed for this session.
+        saved = load_credentials() if self.has_saved_password else {"username": "", "password": ""}
+        same_user = username.lower() == str(saved["username"]).lower()
+
+        if not typed_password:
+            # Empty field = use the saved password (only for the saved user).
+            if not (self.has_saved_password and same_user and saved["password"]):
+                self.login_error.configure(text="Inserisci la password.")
+                return
+            password = str(saved["password"])
+        else:
+            password = typed_password
+            if self.has_saved_password and same_user and password != saved["password"] and not remember:
+                self.login_error.configure(
+                    text="Password diversa da quella salvata. Spunta “Ricorda le credenziali” per aggiornarla."
+                )
+                return
             if remember:
                 save_credentials(username, password)
-            self.credentials = {"username": username, "password": password}
+                self.has_saved_password = True
+
+        self.pass_entry.delete(0, "end")
+        if self.credentials.get("username") != username or self.credentials.get("password") != password:
             self.api_token = ""
             self.api_token_user = ""
-            self._show_dashboard(username)
-            return
-        if not matches and not remember:
-            self.login_error.configure(
-                text="Credenziali diverse da quelle salvate. Spunta “Ricorda le credenziali” per aggiornarle."
-            )
-            return
-
-        if not matches and remember:
-            save_credentials(username, password)
-            self.credentials = {"username": username, "password": password}
-            self.api_token = ""
-            self.api_token_user = ""
-
+        # From here until "Esci" the password is in memory: it is needed to log in to the portal API.
+        self.credentials = {"username": username, "password": password}
         self._show_dashboard(username)
 
     # ------------------------------------------------------------------ dashboard
@@ -515,6 +538,7 @@ class LoginWindow(tk.Tk):
         profile_menu.add_command("Apri log API (debug sync)", self._open_api_log)
         profile_menu.add_command("Advanced · API tester", self._open_api_update_window)
         profile_menu.add_separator()
+        profile_menu.add_command("Dimentica la password su questo PC…", self._forget_password, disabled=not self.has_saved_password)
         profile_menu.add_command("Esci", self._logout)
         profile_menu.popup_below(anchor, align_right=True)
 
@@ -534,8 +558,32 @@ class LoginWindow(tk.Tk):
         if self.jobs.running:
             self._toast(f"Attendi la fine di {self.jobs.label} prima di uscire", "info")
             return
+        self._clear_session_secrets()
         self._build_login_ui()
-        self._toast("Disconnesso", "info")
+        self._toast("Disconnesso: password e token tolti dalla memoria", "info")
+
+    def _clear_session_secrets(self) -> None:
+        """Forget the password and the portal token held in memory (the saved copy stays)."""
+        self.api_token = ""
+        self.api_token_user = ""
+        self.clockify_user_uuid = ""
+        self.credentials = {"username": self.credentials.get("username", ""), "password": ""}
+
+    def _forget_password(self) -> None:
+        if not messagebox.askyesno(
+            "Dimentica la password",
+            "Cancellare la password salvata su questo PC (Gestore credenziali di Windows)?\n\n"
+            "La sessione attuale resta aperta finché non esci; al prossimo accesso dovrai riscriverla.",
+            icon="warning",
+        ):
+            return
+        try:
+            forget_saved_password()
+        except Exception as exc:  # noqa: BLE001 - tell the user, nothing else to do
+            self._notify_error("Impossibile cancellare la password salvata", exc)
+            return
+        self.has_saved_password = False
+        self._toast("Password salvata cancellata da questo PC", "info")
 
     # ------------------------------------------------------------------ month navigation
     def _offset_to_ym(self, offset: int) -> tuple[int, int]:
@@ -1091,15 +1139,6 @@ class LoginWindow(tk.Tk):
                 days.append(current)
             current += timedelta(days=1)
         return days
-
-    def _copy_credentials(self, username: str, password: str) -> None:
-        if not username or not password:
-            messagebox.showerror("Errore", "Email e password sono obbligatorie.")
-            return
-
-        self.clipboard_clear()
-        self.clipboard_append(f"{username}\n{password}")
-        self._toast("Credenziali copiate (prima email, poi password)")
 
     def _open_ticket_link(self, ticket_value: str, window: tk.Toplevel) -> None:
         ticket = ticket_value.strip().upper()
@@ -2329,10 +2368,10 @@ class LoginWindow(tk.Tk):
         username_entry.grid(row=1, column=0, sticky="w", padx=(0, 12), pady=(6, 12))
         username_entry.insert(0, self.credentials["username"])
 
-        tk.Label(form, text="Password", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").grid(row=0, column=1, sticky="w")
+        tk.Label(form, text="Password (vuoto = quella della sessione)", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").grid(row=0, column=1, sticky="w")
         password_entry = tk.Entry(form, width=34, font=("Segoe UI", 11), show="*")
         password_entry.grid(row=1, column=1, sticky="w", padx=(0, 12), pady=(6, 12))
-        password_entry.insert(0, self.credentials["password"])
+        # Not prefilled: empty = the password of the current session.
 
         tk.Label(form, text="Ticket", font=("Segoe UI", 11), fg="#f4f4f6", bg="#2b2b30").grid(row=2, column=0, sticky="w")
         ticket_entry = tk.Entry(form, width=34, font=("Segoe UI", 11))
@@ -2462,6 +2501,8 @@ class LoginWindow(tk.Tk):
         def login_api() -> None:
             username = username_entry.get().strip()
             password = password_entry.get().strip()
+            if not password and username.lower() == str(self.credentials.get("username", "")).lower():
+                password = str(self.credentials.get("password", ""))
             if not username or not password:
                 messagebox.showerror("Error", "Username and password are required.")
                 return

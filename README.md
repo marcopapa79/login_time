@@ -29,18 +29,24 @@ python main.py
 or double-click `login_time.bat`.
 
 ## Credentials
-- Nothing is hard-coded. On first login type your portal email and password;
-  with "Ricorda le credenziali" checked the password is stored in
-  **Windows Credential Manager** (entry `login_time/support.quixant.com`) and
+- Nothing is hard-coded. On first login type your portal email and password; with
+  "Ricorda le credenziali" checked the password goes to **Windows Credential Manager**
+  (entry `login_time/support.quixant.com`, encrypted by Windows for your account).
   `credentials.json` keeps only the email.
-- On systems without Credential Manager the password falls back to `credentials.json`
-  (git-ignored).
+- The password is never shown or prefilled: with a saved password leave the field empty.
+  It is read from Credential Manager only when you press ACCEDI and stays in memory until "Esci".
+- The portal gets the password once per session (`POST /api/login`, HTTPS); every other call
+  uses the Bearer token, kept in memory only. "Esci" clears password and token from memory.
+- Profile menu → "Dimentica la password su questo PC" deletes the saved copy.
+- `logs/api_sync.log` masks password and token (`***`). Details: `docs/SECURITY.md`.
+- Fallback without Credential Manager: password in `credentials.json` (git-ignored).
 
 ## Files
 - `worklogs.json` – local worklog rows
 - `ticket_uuid_cache.json` – ticket code → portal UUID cache
 - `docs/DESIGN_BRIEF.md` – UI brief and rationale of the technical choices
 - `docs/extra-off-api.md` – verified Extra Off API flow
+- `docs/SECURITY.md` – how password and token are handled, comparison with the browser, limits and checks
 
 ## Local data
 `worklogs.json`, `ticket_uuid_cache.json` and `credentials.json` are git-ignored:

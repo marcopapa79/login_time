@@ -30,6 +30,10 @@ class FakeStore:
         self.stored = (username, password)
         return True
 
+    def delete_credential(self):
+        self.stored = None
+        return True
+
 
 class CredentialStorageTests(unittest.TestCase):
     def setUp(self):
@@ -74,10 +78,80 @@ class CredentialStorageTests(unittest.TestCase):
         self.assertNotIn("password", json.loads(self.cred_file.read_text(encoding="utf-8")))
         self.assertEqual(config.load_credentials()["password"], "new-secret")
 
+    def test_forget_removes_password_and_keeps_email(self):
+        store = FakeStore(stored=("u@x.com", "secret"))
+        self.use_store(store)
+        self.cred_file.write_text(json.dumps({"username": "u@x.com"}), encoding="utf-8")
+
+        config.forget_saved_password()
+
+        self.assertIsNone(store.stored)
+        self.assertEqual(json.loads(self.cred_file.read_text(encoding="utf-8")), {"username": "u@x.com"})
+        self.assertEqual(config.load_saved_username(), ("u@x.com", False))
+
+    def test_load_saved_username_does_not_return_the_password(self):
+        self.use_store(FakeStore(stored=("u@x.com", "secret")))
+        self.cred_file.write_text(json.dumps({"username": "u@x.com"}), encoding="utf-8")
+        self.assertEqual(config.load_saved_username(), ("u@x.com", True))
+
     def test_non_windows_store_is_not_supported(self):
         if sys.platform != "win32":
             self.assertFalse(credentials_store.is_supported())
             self.assertIsNone(credentials_store.read_credential())
+
+
+class LoginFlowTests(unittest.TestCase):
+    """_handle_login with the password field empty / typed (no Tk window needed)."""
+
+    def make_window(self, *, saved_user="u@x.com", saved_password="secret", typed_user="u@x.com", typed_password="", remember=False):
+        window = object.__new__(LoginWindow)
+        window.has_saved_password = bool(saved_password)
+        window.credentials = {"username": saved_user, "password": ""}
+        window.api_token = ""
+        window.api_token_user = ""
+        window.user_entry = mock.Mock(get=mock.Mock(return_value=typed_user))
+        window.pass_entry = mock.Mock(get=mock.Mock(return_value=typed_password))
+        window.remember_var = mock.Mock(get=mock.Mock(return_value=remember))
+        window.login_error = mock.Mock()
+        window._show_dashboard = mock.Mock()
+        self.loader = mock.patch("login_time.ui.load_credentials", return_value={"username": saved_user, "password": saved_password})
+        self.saver = mock.patch("login_time.ui.save_credentials")
+        self.loader.start()
+        self.save_mock = self.saver.start()
+        self.addCleanup(self.loader.stop)
+        self.addCleanup(self.saver.stop)
+        return window
+
+    def test_empty_field_uses_the_saved_password(self):
+        window = self.make_window()
+        window._handle_login()
+        window._show_dashboard.assert_called_once()
+        self.assertEqual(window.credentials["password"], "secret")
+        window.pass_entry.delete.assert_called_once()
+
+    def test_empty_field_without_saved_password_is_refused(self):
+        window = self.make_window(saved_password="")
+        window._handle_login()
+        window._show_dashboard.assert_not_called()
+
+    def test_different_password_needs_remember(self):
+        window = self.make_window(typed_password="other")
+        window._handle_login()
+        window._show_dashboard.assert_not_called()
+        window = self.make_window(typed_password="other", remember=True)
+        window._handle_login()
+        self.save_mock.assert_called_once_with("u@x.com", "other")
+        self.assertEqual(window.credentials["password"], "other")
+
+    def test_logout_clears_password_and_token(self):
+        window = object.__new__(LoginWindow)
+        window.credentials = {"username": "u@x.com", "password": "secret"}
+        window.api_token = "tok"
+        window.api_token_user = "u@x.com"
+        window.clockify_user_uuid = "x"
+        window._clear_session_secrets()
+        self.assertEqual(window.credentials, {"username": "u@x.com", "password": ""})
+        self.assertEqual(window.api_token, "")
 
 
 class EditAndResendTests(unittest.TestCase):

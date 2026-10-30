@@ -115,6 +115,23 @@ def load_credentials() -> Dict[str, str]:
     return {"username": username, "password": file_password or DEFAULT_PASSWORD}
 
 
+def load_saved_username() -> tuple[str, bool]:
+    """(username, a password is saved) without keeping the password around."""
+    creds = load_credentials()
+    return creds["username"], bool(creds["password"])
+
+
+def forget_saved_password() -> bool:
+    """Delete the stored password (Credential Manager and any copy in credentials.json).
+    The email stays, so the login form is still prefilled."""
+    username, _password = _read_credentials_file()
+    stored = credentials_store.read_credential() if credentials_store.is_supported() else None
+    username = username or (stored[0] if stored else "") or DEFAULT_USERNAME
+    removed = credentials_store.delete_credential() if credentials_store.is_supported() else True
+    _write_credentials_file(username, None)
+    return removed
+
+
 def save_credentials(username: str, password: str) -> None:
     """Persist credentials for next app openings (password in Credential Manager when available)."""
     if credentials_store.is_supported() and credentials_store.write_credential(username, password):
