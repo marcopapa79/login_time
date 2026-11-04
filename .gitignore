@@ -8,3 +8,4 @@ ticket_uuid_cache.json
 *.tmp
 logs/
 jira_settings.json
+worklogs.backup-*.json

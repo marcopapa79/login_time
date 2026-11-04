@@ -48,8 +48,10 @@ class ToastHost:
     }
     _DURATIONS = {"success": 3000, "info": 4000, "warning": 6000, "error": 0, "progress": 0}
 
-    def __init__(self, root: tk.Tk) -> None:
+    def __init__(self, root: tk.Tk, *, bottom_margin: int = 24) -> None:
         self.root = root
+        # Distance from the bottom edge: leaves room for the status bar at the bottom of the window.
+        self.bottom_margin = bottom_margin
         self._frame: tk.Frame | None = None
         self._after_id: str | None = None
         self._progress_frame: tk.Frame | None = None
@@ -60,9 +62,9 @@ class ToastHost:
     def _toast_y_offset(self) -> int:
         frame = self._progress_frame
         if frame is None or not frame.winfo_exists():
-            return -24
+            return -self.bottom_margin
         frame.update_idletasks()
-        return -24 - frame.winfo_height() - 8
+        return -self.bottom_margin - frame.winfo_height() - 8
 
     def show(
         self,
@@ -154,7 +156,7 @@ class ToastHost:
             self._progress_cancel.pack(side="right")
             self._progress_bar = ttk.Progressbar(frame, style="Accent.Horizontal.TProgressbar", mode="determinate", length=380)
             self._progress_bar.pack(fill="x", pady=(8, 0))
-            frame.place(relx=1.0, rely=1.0, x=-24, y=-24, anchor="se")
+            frame.place(relx=1.0, rely=1.0, x=-24, y=-self.bottom_margin, anchor="se")
             self._progress_frame = frame
         frame.lift()
         assert self._progress_label and self._progress_bar and self._progress_cancel
@@ -185,7 +187,7 @@ class ToastHost:
         self._progress_bar = None
         self._progress_cancel = None
         if self._frame is not None and self._frame.winfo_exists():
-            self._frame.place_configure(y=-24)
+            self._frame.place_configure(y=-self.bottom_margin)
 
 
 class DarkMenu(tk.Toplevel):

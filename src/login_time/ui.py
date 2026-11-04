@@ -25,6 +25,8 @@ from .config import (
     save_credentials,
     save_ticket_uuid_cache,
     save_work_logs,
+    take_worklog_backup_notice,
+    worklog_file_state,
 )
 from .jira_page import JiraPage
 from .jobs import JobRunner
@@ -83,6 +85,11 @@ FILTERS = [
     ("off", "Extra Off"),
 ]
 ALREADY_SYNCED_TYPES = {"qxsupport_synced", "ticket_synced"}
+WEEKDAYS_IT = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"]
+# How often the app re-checks worklogs.json on disk (OneDrive may replace it with a newer copy).
+DB_POLL_MS = 5000
+# Room left at the bottom of the window for the database status bar (toasts sit above it).
+STATUS_BAR_MARGIN = 24 + 30
 
 
 class LoginWindow(tk.Tk):
@@ -113,8 +120,15 @@ class LoginWindow(tk.Tk):
         self.month_view_var = tk.StringVar(value="")
         self.selected_month_offset = 0
 
-        self.toast = ToastHost(self)
+        self.toast = ToastHost(self, bottom_margin=STATUS_BAR_MARGIN)
         self.jobs = JobRunner(self)
+        # Database (worklogs.json) status shown at the top and bottom of the window.
+        self._db_chip: tk.Label | None = None
+        self._db_chip_tip: Tooltip | None = None
+        self._db_footer_text: tk.Label | None = None
+        self._db_footer_path: tk.Label | None = None
+        self._db_footer_reload: tk.Button | None = None
+        self._db_alerted_mtime: float | None = None
         self.rows_in_flight: set[int] = set()
         self.protocol("WM_DELETE_WINDOW", self._confirm_close)
         self.filter_var = tk.StringVar(value="all")
@@ -128,6 +142,7 @@ class LoginWindow(tk.Tk):
 
         self._bootstrap_ticket_uuid_cache()
         self._build_login_ui()
+        self.after(DB_POLL_MS, self._poll_db_file)
 
     def _maximize_window(self) -> None:
         try:
@@ -175,6 +190,9 @@ class LoginWindow(tk.Tk):
         self.unbind("<Control-n>")
         self.unbind("<Control-t>")
         self.configure(bg=C["bg_app"])
+        self._build_db_chip(self).place(relx=1.0, x=-24, y=16, anchor="ne")
+        self._build_db_footer(self)
+        self._refresh_db_status()
 
         surface = C["surface"]
         card = tk.Frame(self, bg=surface, highlightthickness=1, highlightbackground=C["border"], padx=32, pady=30)
@@ -300,6 +318,8 @@ class LoginWindow(tk.Tk):
         self.page_var = tk.StringVar(value="ore")
         self.page_var.trace_add("write", lambda *_: self._apply_page())
         self._build_topbar(shell, username)
+        # Packed before the page so it is never squeezed out by the (expanding) page.
+        self._build_db_footer(shell)
 
         self.page_host = tk.Frame(shell, bg=C["bg_app"])
         self.page_host.pack(fill="both", expand=True)
@@ -419,6 +439,11 @@ class LoginWindow(tk.Tk):
         placeholder.bind("<Button-1>", lambda _e: search_entry.focus_set())
         self.search_var.trace_add("write", refresh_placeholder)
         self.after(20, refresh_placeholder)
+
+        # Date of the database version on screen. Packed last: on a narrow window it is the
+        # piece that gets cut, not the tools.
+        self._build_db_chip(bar).pack(side="left", padx=(16, 0))
+        self._refresh_db_status()
 
     def _build_month_bar(self, parent: tk.Misc) -> None:
         bg = C["bg_app"]
@@ -639,6 +664,204 @@ class LoginWindow(tk.Tk):
             return
         self.has_saved_password = False
         self._toast("Password salvata cancellata da questo PC", "info")
+
+    # ------------------------------------------------------------------ database file (worklogs.json)
+    def _build_db_chip(self, parent: tk.Misc) -> tk.Label:
+        """Small label at the top: date of the database version on screen (click = reload / open folder)."""
+        chip = tk.Label(parent, text="", font=F["small"], bg=C["raised"], fg=C["muted"], padx=10, pady=4, anchor="w", cursor="hand2")
+        chip.bind("<Button-1>", lambda _e: self._on_db_status_click())
+        self._db_chip = chip
+        self._db_chip_tip = Tooltip(chip, "")
+        return chip
+
+    def _build_db_footer(self, parent: tk.Misc) -> None:
+        """Status bar at the bottom of the window: date of the database version on screen."""
+        surface = C["surface"]
+        footer = tk.Frame(parent, bg=surface, padx=24, pady=5)
+        footer.pack(side="bottom", fill="x")
+        divider(parent).pack(side="bottom", fill="x")
+        self._db_footer_text = tk.Label(footer, text="", font=F["small"], bg=surface, fg=C["muted"], anchor="w")
+        self._db_footer_text.pack(side="left")
+        self._db_footer_reload = button(
+            footer, "Ricarica dal disco", self._reload_worklogs_from_disk, variant="link", size="sm", parent_bg=surface, bold=True
+        )
+        self._db_footer_path = tk.Label(footer, text="", font=F["small"], bg=surface, fg=C["subtle"], anchor="e", cursor="hand2")
+        self._db_footer_path.pack(side="right")
+        self._db_footer_path.bind("<Button-1>", lambda _e: self._open_db_folder())
+        Tooltip(self._db_footer_path, "Apri la cartella dei dati")
+
+    @staticmethod
+    def _format_db_time(timestamp: float, *, seconds: bool = False, weekday: bool = False) -> str:
+        moment = datetime.fromtimestamp(timestamp)
+        text = moment.strftime("%d/%m/%Y %H:%M:%S" if seconds else "%d/%m/%Y %H:%M")
+        return f"{WEEKDAYS_IT[moment.weekday()]} {text}" if weekday else text
+
+    @staticmethod
+    def _db_age(timestamp: float) -> str:
+        moment = datetime.fromtimestamp(timestamp)
+        seconds = (datetime.now() - moment).total_seconds()
+        if seconds < 60:
+            return "adesso"  # also a date slightly in the future (clock of the other PC ahead)
+        if seconds < 3600:
+            return f"{int(seconds // 60)} min fa"
+        days = (date.today() - moment.date()).days
+        if days <= 0:
+            return f"{int(seconds // 3600)} h fa"
+        return "ieri" if days == 1 else f"{days} giorni fa"
+
+    def _db_status_texts(self, state: object) -> dict[str, object]:
+        """Texts and colors for the top chip and the bottom bar."""
+        path = state.path  # type: ignore[attr-defined]
+        loaded = state.loaded_mtime  # type: ignore[attr-defined]
+        disk = state.disk_mtime  # type: ignore[attr-defined]
+        loaded_text = self._format_db_time(loaded, seconds=True, weekday=True) if loaded else ""
+        result: dict[str, object] = {"path": str(path), "warn": False, "reload": False}
+
+        if state.changed_on_disk:  # type: ignore[attr-defined]
+            result["warn"] = True
+            if disk is None:
+                result["chip"] = "⚠ Database non trovato"
+                result["footer"] = (
+                    f"⚠ {path.name} non c'è più nella cartella dati: al prossimo salvataggio l'app lo ricrea con i dati che vedi."
+                )
+            elif loaded is None or disk >= loaded:
+                disk_text = self._format_db_time(disk, seconds=True, weekday=True)
+                result["reload"] = True
+                result["chip"] = "⚠ DB cambiato · Ricarica"
+                result["footer"] = (
+                    f"⚠ Un altro PC ha aggiornato il database il {disk_text}."
+                    + (f" Qui vedi ancora la versione del {loaded_text}." if loaded_text else "")
+                    + " Ricarica prima di modificare."
+                )
+            else:
+                disk_text = self._format_db_time(disk, seconds=True, weekday=True)
+                result["reload"] = True
+                result["chip"] = "⚠ DB del disco più vecchio"
+                result["footer"] = (
+                    f"⚠ Il file sul disco ({disk_text}) è più vecchio della versione aperta qui ({loaded_text}). "
+                    "Se salvi, l'app tiene una copia del file del disco."
+                )
+            result["tip"] = f"{path}\nVersione sul disco: {self._format_db_time(disk, seconds=True) if disk else 'nessuna'}"
+            return result
+
+        if loaded is None:
+            result["chip"] = "DB non ancora salvato"
+            result["footer"] = "Database non ancora creato: verrà salvato alla prima voce."
+            result["tip"] = f"Il database verrà creato in:\n{path}"
+            return result
+
+        result["chip"] = f"DB aggiornato {self._format_db_time(loaded)}"
+        result["footer"] = f"Database aggiornato {loaded_text} · {self._db_age(loaded)}"
+        result["tip"] = (
+            f"Ultimo salvataggio di {path.name}: {loaded_text}\n{path}\n"
+            "Confronta questa data sugli altri PC: dove è più vecchia, il file non è ancora sincronizzato."
+        )
+        return result
+
+    def _refresh_db_status(self) -> None:
+        """Update the date of the database at the top and at the bottom of the window."""
+        try:
+            state = worklog_file_state()
+        except OSError:
+            return
+        texts = self._db_status_texts(state)
+        warn = bool(texts["warn"])
+
+        chip = self.__dict__.get("_db_chip")
+        if chip is not None and chip.winfo_exists():
+            chip.configure(
+                text=str(texts["chip"]),
+                bg=C["warn_bg"] if warn else C["raised"],
+                fg=C["warn"] if warn else C["muted"],
+                font=F["small_bold"] if warn else F["small"],
+            )
+            tip = self.__dict__.get("_db_chip_tip")
+            if tip is not None:
+                tip.text = str(texts["tip"])
+
+        footer_text = self.__dict__.get("_db_footer_text")
+        if footer_text is not None and footer_text.winfo_exists():
+            footer_text.configure(text=str(texts["footer"]), fg=C["warn"] if warn else C["muted"])
+            footer_path = self.__dict__.get("_db_footer_path")
+            if footer_path is not None and footer_path.winfo_exists():
+                footer_path.configure(text=str(texts["path"]))
+            reload_btn = self.__dict__.get("_db_footer_reload")
+            if reload_btn is not None and reload_btn.winfo_exists():
+                if texts["reload"] and not reload_btn.winfo_ismapped():
+                    reload_btn.pack(side="left", padx=(12, 0), after=footer_text)
+                elif not texts["reload"] and reload_btn.winfo_ismapped():
+                    reload_btn.pack_forget()
+
+        backup = take_worklog_backup_notice()
+        if backup is not None:
+            self._toast(
+                f"Il database sul disco era diverso da quello aperto qui: prima di salvare ne ho fatto una copia ({backup.name}).",
+                "warning",
+                action_text="Apri cartella",
+                action=self._open_db_folder,
+                duration_ms=0,
+            )
+            return
+
+        # Tell once per new version found on disk (the bar stays yellow until reloaded).
+        if texts["reload"] and state.disk_mtime != self.__dict__.get("_db_alerted_mtime"):
+            self._db_alerted_mtime = state.disk_mtime
+            newer = state.loaded_mtime is None or (state.disk_mtime or 0) >= state.loaded_mtime
+            if newer:
+                self._toast(
+                    f"Il database sul disco è più recente ({self._format_db_time(state.disk_mtime or 0)}): "
+                    "ricaricalo prima di modificare.",
+                    "warning",
+                    action_text="Ricarica",
+                    action=self._reload_worklogs_from_disk,
+                    duration_ms=0,
+                )
+
+    def _poll_db_file(self) -> None:
+        try:
+            self._refresh_db_status()
+        except tk.TclError:
+            return  # window closed
+        try:
+            self.after(DB_POLL_MS, self._poll_db_file)
+        except tk.TclError:
+            pass
+
+    def _on_db_status_click(self) -> None:
+        state = worklog_file_state()
+        if state.changed_on_disk and state.disk_mtime is not None:
+            self._reload_worklogs_from_disk()
+        else:
+            self._open_db_folder()
+
+    def _open_db_folder(self) -> None:
+        folder = worklog_file_state().path.parent
+        try:
+            if hasattr(os, "startfile"):
+                os.startfile(str(folder))  # type: ignore[attr-defined]  # Windows: opens Explorer
+            else:
+                webbrowser.open(folder.as_uri())
+        except (OSError, ValueError) as exc:
+            self._notify_error("Impossibile aprire la cartella dei dati", f"{folder}\n{exc}")
+
+    def _reload_worklogs_from_disk(self) -> None:
+        """Replace the rows in memory with the version of worklogs.json now on disk."""
+        if self.jobs.running:
+            self._toast(f"Attendi la fine di {self.jobs.label} prima di ricaricare il database", "info")
+            return
+        if any(isinstance(child, Modal) and child.winfo_exists() for child in self.winfo_children()):
+            self._toast("Chiudi prima le finestre aperte, poi ricarica il database", "info")
+            return
+        self.work_logs = load_work_logs()
+        self.rows_in_flight.clear()
+        self.ticket_uuid_cache = load_ticket_uuid_cache()
+        self._bootstrap_ticket_uuid_cache()
+        self._db_alerted_mtime = None
+        self.toast.hide()
+        self._render_worklogs()
+        state = worklog_file_state()
+        when = self._format_db_time(state.loaded_mtime, seconds=True) if state.loaded_mtime else "—"
+        self._toast(f"Database ricaricato · versione del {when} · {len(self.work_logs)} righe")
 
     # ------------------------------------------------------------------ month navigation
     def _offset_to_ym(self, offset: int) -> tuple[int, int]:
@@ -1446,6 +1669,7 @@ class LoginWindow(tk.Tk):
 
     def _render_worklogs(self) -> None:
         self._render_after_id = None
+        self._refresh_db_status()  # most renders follow a save: show the new date right away
         if self.worklog_rows is None or not self.worklog_rows.winfo_exists():
             return
 

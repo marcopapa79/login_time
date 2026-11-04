@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shutil
 import threading
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
@@ -199,18 +203,121 @@ def save_credentials(username: str, password: str) -> None:
     _write_credentials_file(username, password)
 
 
+# ---------------------------------------------------------------- worklogs.json version
+# The "database" is worklogs.json in the data folder (often OneDrive, shared between PCs).
+# We remember which version of the file the app has in memory (modification time + content
+# hash), so the UI can show "last updated" and notice when another PC replaced the file.
+# The modification time travels with the file when OneDrive syncs it to the other PCs.
+_UNREADABLE = "unreadable"
+_worklog_seen: Dict[str, object] = {"mtime": None, "mtime_ns": None, "size": None, "digest": None}
+_pending_backup_notice: list[Path] = []  # backups made by save_work_logs, not yet shown to the user
+
+
+@dataclass(frozen=True)
+class WorklogFileState:
+    path: Path
+    loaded_mtime: float | None  # mtime of the version the app has in memory (load or last save)
+    disk_mtime: float | None  # mtime of the file on disk now; None = file missing
+    changed_on_disk: bool  # the file on disk is not the version the app has in memory
+
+
+def worklog_file_path() -> Path:
+    return _WORKLOG_FILE
+
+
+def _digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _remember_worklog_version(data: bytes | None, *, readable: bool = True) -> None:
+    """Record the version on disk as the one now in memory (data=None: no file)."""
+    try:
+        st = _WORKLOG_FILE.stat() if data is not None else None
+    except OSError:
+        st = None
+    _worklog_seen.update(
+        mtime=st.st_mtime if st else None,
+        mtime_ns=st.st_mtime_ns if st else None,
+        size=st.st_size if st else None,
+        digest=(_digest(data) if readable else _UNREADABLE) if data is not None else None,
+    )
+
+
+def _disk_differs_from_memory() -> tuple[bool, os.stat_result | None]:
+    """(file on disk is a different version than the one in memory, its stat)."""
+    try:
+        st = _WORKLOG_FILE.stat()
+    except OSError:
+        return _worklog_seen["digest"] is not None, None  # we had a file, now it is gone
+    if st.st_mtime_ns == _worklog_seen["mtime_ns"] and st.st_size == _worklog_seen["size"]:
+        return False, st
+    try:
+        data = _WORKLOG_FILE.read_bytes()
+    except OSError:
+        return True, st
+    if _worklog_seen["digest"] not in (None, _UNREADABLE) and _digest(data) == _worklog_seen["digest"]:
+        # Same content with a new date (e.g. re-synced unchanged): adopt the new date.
+        _worklog_seen.update(mtime=st.st_mtime, mtime_ns=st.st_mtime_ns, size=st.st_size)
+        return False, st
+    return True, st
+
+
+def worklog_file_state() -> WorklogFileState:
+    """Where worklogs.json is, which version the app shows and whether the disk has another one."""
+    changed, st = _disk_differs_from_memory()
+    loaded = _worklog_seen["mtime"]
+    return WorklogFileState(
+        path=_WORKLOG_FILE,
+        loaded_mtime=float(loaded) if isinstance(loaded, (int, float)) else None,
+        disk_mtime=st.st_mtime if st else None,
+        changed_on_disk=changed,
+    )
+
+
+def _backup_worklog_file() -> Path | None:
+    """Copy the current worklogs.json aside (worklogs.backup-YYYYmmdd-HHMMSS.json)."""
+    if not _WORKLOG_FILE.exists():
+        return None
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = _WORKLOG_FILE.with_name(f"{_WORKLOG_FILE.stem}.backup-{stamp}{_WORKLOG_FILE.suffix}")
+    try:
+        shutil.copy2(_WORKLOG_FILE, target)
+    except OSError:
+        return None
+    return target
+
+
+def take_worklog_backup_notice() -> Path | None:
+    """Most recent backup made while saving (once: the next call returns None)."""
+    if not _pending_backup_notice:
+        return None
+    latest = _pending_backup_notice[-1]
+    _pending_backup_notice.clear()
+    return latest
+
+
 def load_work_logs() -> list[dict[str, str]]:
     """Load local worklog entries shown in dashboard."""
     if not _WORKLOG_FILE.exists():
+        _remember_worklog_version(None)
         return []
 
     try:
-        raw = json.loads(_WORKLOG_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+        data = _WORKLOG_FILE.read_bytes()
+    except OSError:
+        _remember_worklog_version(None)
+        return []
+    try:
+        raw = json.loads(data.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # Unreadable file: the next save keeps a backup copy instead of silently replacing it.
+        _remember_worklog_version(data, readable=False)
         return []
 
     if not isinstance(raw, list):
+        _remember_worklog_version(data, readable=False)
         return []
+    _remember_worklog_version(data)
 
     entries: list[dict[str, str]] = []
     for item in raw:
@@ -256,9 +363,25 @@ def _atomic_write(path: Path, text: str) -> None:
         os.replace(tmp_path, path)
 
 
-def save_work_logs(entries: list[dict[str, str]]) -> None:
-    """Persist worklog entries for future app sessions."""
+def save_work_logs(entries: list[dict[str, str]]) -> Path | None:
+    """Persist worklog entries for future app sessions.
+
+    If the file on disk is not the version the app loaded (another PC saved it in the
+    meantime, or it was unreadable), that file is copied aside first and the copy's path
+    is returned, so nothing is lost silently.
+    """
+    backup = None
+    changed, _st = _disk_differs_from_memory()
+    if changed or _worklog_seen["digest"] == _UNREADABLE:
+        backup = _backup_worklog_file()
+        if backup is not None:
+            _pending_backup_notice.append(backup)
     _atomic_write(_WORKLOG_FILE, json.dumps(entries, indent=2))
+    try:
+        _remember_worklog_version(_WORKLOG_FILE.read_bytes())
+    except OSError:
+        _remember_worklog_version(None)
+    return backup
 
 
 def load_ticket_uuid_cache() -> Dict[str, str]:

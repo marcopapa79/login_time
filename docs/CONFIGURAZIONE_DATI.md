@@ -66,9 +66,19 @@ Prima di cambiare percorso, chiudi l'app e copia nella nuova cartella i file esi
 
 Per condividere i dati tra PC, configura su ciascun PC lo stesso percorso sincronizzato. Non tenere l'app aperta contemporaneamente su due PC: OneDrive e gli altri servizi di sincronizzazione non uniscono le modifiche ai file JSON.
 
+## Data dell'ultimo aggiornamento del database
+
+L'app mostra la data e l'ora dell'ultimo salvataggio di `worklogs.json` in due punti:
+- **in alto**, accanto a "Ore · Hub / Jira" (e in alto a destra nella schermata di login): `DB aggiornato 04/11/2026 11:24`;
+- **in basso**, nella barra di stato: data completa con i secondi, da quanto tempo e il percorso del file. Un clic sul percorso apre la cartella.
+
+La data è quella di modifica del file, che OneDrive porta con sé sugli altri PC. Per capire se un PC è indietro basta confrontare la data: dove è più vecchia, il file non è ancora sincronizzato.
+
+L'app ricontrolla il file ogni 5 secondi. Se mentre è aperta arriva una versione diversa (per esempio OneDrive scarica quella salvata da un altro PC), la scritta diventa gialla, compare un avviso e il pulsante **"Ricarica dal disco"**. Ricarica prima di modificare: se salvi senza ricaricare, l'app prima copia il file del disco in `worklogs.backup-AAAAMMGG-HHMMSS.json` nella stessa cartella, così niente va perso.
+
 ## Priorità e comportamento predefinito
 
 - Se è impostata la variabile d'ambiente `LOGIN_TIME_DATA_DIR`, questa prevale su `data_dir`.
 - Se `local_settings.json` manca o `data_dir` è vuoto, l'app usa la cartella del progetto.
 - I percorsi relativi in `data_dir` sono risolti a partire dalla cartella del progetto.
-- `local_settings.json` e i file di dati locali non vengono sincronizzati da Git.
+- `local_settings.json` e i file di dati locali non vengono sincronizzati da Git.
