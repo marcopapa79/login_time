@@ -82,6 +82,8 @@ L'app verifica il token con `GET /rest/api/3/myself` e solo se funziona lo salva
 | Elenco issue: Da fare / Completate (30 gg) / Segnalate da me / Che seguo | Pagina Jira | `POST /rest/api/3/search/jql` |
 | Filtro veloce per chiave o titolo | Campo "Filtra" | (locale) |
 | Dettagli, descrizione, commenti | Clic su una issue | `GET /issue/{key}`, `GET /issue/{key}/comment` |
+| Figli di un'epica (o sotto-task di una issue), con % completato; clic per aprirli | Finestra issue → "Figli" | `POST /search/jql` con `parent = "KEY" ORDER BY rank ASC` |
+| Aprire l'issue padre (es. l'epica) | Finestra issue → "Padre" | `GET /issue/{key}` |
 | Registrare ore (worklog) con data, ora di inizio e descrizione | Finestra issue → "Registra ore" | `POST /issue/{key}/worklog` |
 | Aggiungere un commento | Finestra issue → "Commento" | `POST /issue/{key}/comment` |
 | Cambiare stato | Finestra issue → "Cambia stato" | `GET`/`POST /issue/{key}/transitions` |

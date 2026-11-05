@@ -26,7 +26,7 @@ from .config import (
 from .jira_client import JiraAuthError, JiraClient, adf_to_text, clean_text
 from .jobs import JobRunner
 from .theme import C, F, Tooltip, button, divider, entry, icon_button, label, pill, text_area
-from .widgets import DarkMenu, Segmented, field_label
+from .widgets import DarkMenu, Segmented, SegmentedBar, field_label
 
 if TYPE_CHECKING:  # pragma: no cover
     from .ui import LoginWindow
@@ -647,6 +647,9 @@ class JiraIssueWindow(tk.Toplevel):
         self.issue: dict[str, Any] = {}
         self.comments: list[dict[str, Any]] = []
         self.transitions: list[dict[str, Any]] = []
+        # Not "children": Tkinter uses that name for the widgets inside the window.
+        self.child_items: list[dict[str, Any]] = []
+        self.child_items_error = ""
         app = self.app
         self.title(f"{key} · Jira")
         self.configure(bg=C["bg_app"])
@@ -728,12 +731,19 @@ class JiraIssueWindow(tk.Toplevel):
         client, key = self.client, self.key
         self.show_message("Carico l'issue…")
 
-        def worker() -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+        def worker() -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], str]:
             api_log.event(f"=== Jira: apro {key} ===")
-            return client.issue(key), client.comments(key), client.transitions(key)
+            issue, comments, transitions = client.issue(key), client.comments(key), client.transitions(key)
+            try:
+                children, children_error = client.children(key), ""
+            except JiraAuthError:
+                raise
+            except RuntimeError as exc:  # the issue is still worth showing without its children
+                children, children_error = [], str(exc)
+            return issue, comments, transitions, children, children_error
 
-        def done(result: tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]) -> None:
-            self.issue, self.comments, self.transitions = result
+        def done(result: tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], str]) -> None:
+            self.issue, self.comments, self.transitions, self.child_items, self.child_items_error = result
             summary = str((self.issue.get("fields") or {}).get("summary", ""))
             if summary:
                 self.header_summary.configure(text=summary)
@@ -781,10 +791,17 @@ class JiraIssueWindow(tk.Toplevel):
             ("Stima residua", field_name(fields.get("timetracking"), "remainingEstimate")),
         ]
         rows = [(n, v) for n, v in rows if v]
+        parent_key = str(parent.get("key", "")) if parent else ""
         for position, (name, value) in enumerate(rows):
             r, c = divmod(position, 2)
             tk.Label(grid, text=name, font=F["small"], bg=surface, fg=C["subtle"]).grid(row=r, column=c * 2, sticky="nw", padx=(0, 8), pady=1)
-            tk.Label(grid, text=value, font=F["body"], bg=surface, fg=C["text"], anchor="w", justify="left", wraplength=max(width // 2 - 130, 180)).grid(row=r, column=c * 2 + 1, sticky="nw", padx=(0, 18), pady=1)
+            value_label = tk.Label(grid, text=value, font=F["body"], bg=surface, fg=C["text"], anchor="w", justify="left", wraplength=max(width // 2 - 130, 180))
+            value_label.grid(row=r, column=c * 2 + 1, sticky="nw", padx=(0, 18), pady=1)
+            if name == "Padre" and parent_key:
+                parent_summary = field_name(parent.get("fields"), "summary")
+                value_label.configure(fg=C["accent_text"], cursor="hand2")
+                value_label.bind("<Button-1>", lambda _e, k=parent_key, t=parent_summary: self.page.open_issue(k, t))
+                Tooltip(value_label, f"Apri {parent_key}")
         grid.columnconfigure(1, weight=1)
         grid.columnconfigure(3, weight=1)
         description = clean_text(adf_to_text(fields.get("description")))
@@ -792,6 +809,8 @@ class JiraIssueWindow(tk.Toplevel):
             tk.Label(card, text="Descrizione", font=F["small"], bg=surface, fg=C["subtle"]).pack(anchor="w", pady=(10, 2))
             tk.Label(card, text=description if len(description) <= 1500 else description[:1497] + "…", font=F["body"], bg=surface, fg=C["text"], anchor="w", justify="left", wraplength=width).pack(fill="x")
             icon_button(top, "copy", lambda: self.app._copy_with_toast(description, "Descrizione copiata"), parent_bg=surface, tooltip="Copia descrizione").pack(side="right")
+
+        self.render_children(fields)
 
         tk.Label(self.body, text=f"COMMENTI · {len(self.comments)} · più recenti in alto", font=F["caption"], bg=C["bg_app"], fg=C["subtle"]).pack(anchor="w", pady=(0, 6))
         if not self.comments:
@@ -807,6 +826,76 @@ class JiraIssueWindow(tk.Toplevel):
             icon_button(line, "copy", lambda t=body: self.app._copy_with_toast(t, "Commento copiato"), parent_bg=surface, tooltip="Copia").pack(side="right")
             tk.Label(box, text=body or "—", font=F["body"], bg=surface, fg=C["text"], anchor="w", justify="left", wraplength=width).pack(fill="x", pady=(6, 0))
         self.canvas.yview_moveto(0)
+
+    def render_children(self, fields: dict[str, Any]) -> None:
+        """"Figli" card, like Jira's "Child work items": progress bar and one clickable row per child."""
+        issuetype = fields.get("issuetype") or {}
+        is_epic = issuetype.get("hierarchyLevel") == 1 or "epic" in str(issuetype.get("name", "")).lower()
+        if not self.child_items and not self.child_items_error and not is_epic:
+            return  # a plain task without subtasks: nothing to show
+        surface = C["surface"]
+        card = tk.Frame(self.body, bg=surface, highlightthickness=1, highlightbackground=C["border_strong"], padx=14, pady=12)
+        card.pack(fill="x", pady=(0, 12))
+        top = tk.Frame(card, bg=surface)
+        top.pack(fill="x")
+        tk.Label(top, text="Figli", font=F["subtitle"], bg=surface, fg=C["text"]).pack(side="left")
+        total = len(self.child_items)
+        done = sum(1 for child in self.child_items if status_of(child.get("fields") or {})[1] == "synced")
+        if total:
+            tk.Label(top, text=f"{total}", font=F["small_bold"], bg=C["raised"], fg=C["muted"], padx=6).pack(side="left", padx=(8, 0))
+            percent = round(done * 100 / total)
+            tk.Label(top, text=f"{percent}% completato · {done} di {total}", font=F["small"], bg=surface, fg=C["muted"]).pack(side="right")
+            bar = SegmentedBar(card, height=8, bg=surface)
+            bar.pack(fill="x", pady=(10, 8))
+            bar.set_segments([(done / total, C["ok"])])
+        if self.child_items_error:
+            tk.Label(card, text=f"Impossibile leggere i figli: {self.child_items_error}", font=F["body"], bg=surface, fg=C["danger"],
+                     anchor="w", justify="left", wraplength=max(self.canvas.winfo_width() - 100, 400)).pack(fill="x", pady=(8, 0))
+            return
+        if not total:
+            tk.Label(card, text="Nessun figlio.", font=F["body"], bg=surface, fg=C["muted"]).pack(anchor="w", pady=(8, 0))
+            return
+        table = tk.Frame(card, bg=surface)
+        table.pack(fill="x")
+        table.columnconfigure(1, weight=1)
+        for column, title in enumerate(("CHIAVE", "TITOLO", "PRIORITÀ", "ASSEGNATA A", "STATO")):
+            tk.Label(table, text=title, font=F["caption"], bg=surface, fg=C["subtle"], anchor="w").grid(
+                row=0, column=column, sticky="w", padx=(6 if column == 0 else 0, 12), pady=(0, 4))
+        for index, child in enumerate(self.child_items, start=1):
+            self.render_child_row(table, index, child)
+
+    def render_child_row(self, table: tk.Frame, row_index: int, child: dict[str, Any]) -> None:
+        fields = child.get("fields") or {}
+        key = str(child.get("key", ""))
+        summary = str(fields.get("summary", ""))
+        status_name, kind = status_of(fields)
+        surface = C["surface"]
+        done = kind == "synced"
+        kind_name = field_name(fields.get("issuetype"))
+        key_font = (F["body"][0], F["body"][1], "overstrike") if done else F["body"]  # like Jira: done keys struck through
+        cells = [
+            tk.Label(table, text=key, font=key_font, bg=surface, fg=C["accent_text"], anchor="w", cursor="hand2"),
+            tk.Label(table, text=summary, font=F["body"], bg=surface, fg=C["muted"] if done else C["text"], anchor="w", width=1, cursor="hand2"),
+            tk.Label(table, text=field_name(fields.get("priority")), font=F["small"], bg=surface, fg=C["subtle"], anchor="w", cursor="hand2"),
+            tk.Label(table, text=field_name(fields.get("assignee"), "displayName") or "—", font=F["small"], bg=surface, fg=C["subtle"], anchor="w", cursor="hand2"),
+        ]
+        for column, cell in enumerate(cells):
+            cell.grid(row=row_index, column=column, sticky="ew", padx=(6 if column == 0 else 0, 12), pady=3)
+        status = pill(table, status_name or "—", kind)
+        status.grid(row=row_index, column=4, sticky="w", pady=3)
+        Tooltip(cells[1], f"{kind_name} · {summary}" if kind_name else summary)
+
+        def open_child(_e: tk.Event | None = None) -> None:
+            self.page.open_issue(key, summary)
+
+        def set_bg(color: str) -> None:
+            for cell in cells:
+                cell.configure(bg=color)
+
+        for cell in [*cells, status]:
+            cell.bind("<Button-1>", open_child)
+            cell.bind("<Enter>", lambda _e: set_bg(C["hover"]), add="+")
+            cell.bind("<Leave>", lambda _e: set_bg(surface), add="+")
 
     # ---- composer
     def build_mode(self) -> None:

@@ -58,6 +58,15 @@ class FakeJira:
             _issue("CS-77", "Documentare procedura RMA per clienti EMEA", "In Review", "indeterminate", kind="Story", updated="2026-10-22T08:40:00.000+0200"),
             _issue("PF-350", "Aggiornare toolchain build a GCC 13", "Done", "done", updated="2026-10-15T12:00:00.000+0200"),
         ]
+        # An epic with three children. Kept out of self.issues so the "my issues" lists stay as they were;
+        # it is found by key and by "parent = …" searches.
+        self.epic = _issue("PF-400", "Release candidate FPGA rev B", "In Progress", "indeterminate", kind="Epic")
+        self.epic["fields"]["issuetype"]["hierarchyLevel"] = 1
+        parent = {"key": "PF-400", "fields": {"summary": "Release candidate FPGA rev B"}}
+        for key in ("PF-412", "PF-350", "PF-398"):  # rank order
+            next(i for i in self.issues if i["key"] == key)["fields"]["parent"] = parent
+        self.children_order = ["PF-412", "PF-350", "PF-398"]
+        self.rank_supported = True
         self.comments: dict[str, list[dict]] = {
             "PF-412": [
                 {"id": "2", "author": {"displayName": "Giulia Rossi"}, "created": "2026-10-29T15:10:00.000+0100", "body": _adf("Riprodotto anche su una seconda unità.")},
@@ -188,7 +197,14 @@ class FakeJira:
                     return self._reply(200, {"accountId": "acc-1", "displayName": "Marco Papa", "emailAddress": EMAIL})
                 if path == "search/jql" and method == "POST":
                     jql = str(body.get("jql", ""))
-                    if "statusCategory = Done" in jql:
+                    if "rank" in jql.lower() and not fake.rank_supported:
+                        return self._reply(400, {"errorMessages": ["Field 'rank' does not exist or you do not have permission to view it."]})
+                    if jql.startswith("parent = "):
+                        parent_key = jql.split('"')[1]
+                        by_key = {i["key"]: i for i in fake.issues}
+                        ordered = [by_key[k] for k in fake.children_order] if "rank" in jql.lower() else sorted(by_key.values(), key=lambda i: i["fields"]["created"])
+                        items = [i for i in ordered if (i["fields"].get("parent") or {}).get("key") == parent_key]
+                    elif "statusCategory = Done" in jql:
                         items = [i for i in fake.issues if i["fields"]["status"]["statusCategory"]["key"] == "done"]
                     else:
                         items = [i for i in fake.issues if i["fields"]["status"]["statusCategory"]["key"] != "done"]
@@ -202,7 +218,7 @@ class FakeJira:
                     return self._reply(200, payload)
                 if parts[0] == "issue" and len(parts) >= 2:
                     key = parts[1]
-                    issue = next((i for i in fake.issues if i["key"] == key), None)
+                    issue = next((i for i in [*fake.issues, fake.epic] if i["key"] == key), None)
                     if issue is None:
                         return self._reply(404, {"errorMessages": ["Issue does not exist or you do not have permission to see it."]})
                     tail = parts[2] if len(parts) > 2 else ""

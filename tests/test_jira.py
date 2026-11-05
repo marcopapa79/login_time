@@ -153,6 +153,35 @@ class JiraClientTests(unittest.TestCase):
         self.assertNotIn(self.fake.auth_headers[0], joined)
         self.assertIn("jira /rest/api/3/myself", joined)
 
+    def test_children_of_an_epic_in_board_order(self):
+        client = self.client()
+        children = client.children("PF-400")
+        self.assertEqual([c["key"] for c in children], ["PF-412", "PF-350", "PF-398"])
+        method, path, body = self.fake.requests[-1]
+        self.assertEqual((method, body["jql"]), ("POST", 'parent = "PF-400" ORDER BY rank ASC'))
+        self.assertEqual(body["fields"], jira_client.CHILD_FIELDS)
+        self.assertEqual(children[1]["fields"]["status"]["statusCategory"]["key"], "done")
+
+    def test_children_without_rank_fall_back_to_creation_order(self):
+        self.fake.rank_supported = False
+        children = self.client().children("pf-400")  # key case does not matter
+        self.assertEqual(len(children), 3)
+        self.assertEqual(self.fake.requests[-1][2]["jql"], 'parent = "PF-400" ORDER BY created ASC')
+
+    def test_children_of_a_leaf_and_odd_keys(self):
+        client = self.client()
+        self.assertEqual(client.children("CS-77"), [])
+        before = len(self.fake.requests)
+        self.assertEqual(client.children('PF-1" OR project = X'), [])  # never reaches the JQL
+        self.assertEqual(len(self.fake.requests), before)
+
+    def test_children_pagination(self):
+        client = self.client()
+        with mock.patch.object(client, "search", side_effect=[([{"key": "A-1"}], "1"), ([{"key": "A-2"}], "2"), ([{"key": "A-3"}], None)]) as search:
+            self.assertEqual([c["key"] for c in client.children("A-9")], ["A-1", "A-2", "A-3"])
+        self.assertEqual(search.call_count, 3)
+        self.assertEqual(search.call_args.kwargs["next_page_token"], "2")
+
     def test_unknown_issue_gives_readable_error(self):
         with self.assertRaises(RuntimeError) as ctx:
             self.client().issue("XX-1")

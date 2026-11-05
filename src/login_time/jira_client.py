@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -29,6 +30,9 @@ from .jira_oauth import OAuthError, OAuthLoginRequired, OAuthSession
 GATEWAY = "https://api.atlassian.com/ex/jira"
 LIST_FIELDS = ["summary", "status", "priority", "issuetype", "project", "duedate", "updated", "assignee"]
 DETAIL_FIELDS = LIST_FIELDS + ["description", "reporter", "created", "labels", "timetracking", "parent"]
+CHILD_FIELDS = ["summary", "status", "priority", "issuetype", "assignee"]
+_ISSUE_KEY = re.compile(r"^[A-Z][A-Z0-9_]*-\d+$")
+MAX_CHILDREN = 500
 
 
 class JiraAuthError(RuntimeError):
@@ -229,6 +233,29 @@ class JiraClient:
         if payload.get("isLast") is True:
             token = None
         return issues, token
+
+    def children(self, key: str) -> list[dict[str, Any]]:
+        """Child work items: an epic's stories/tasks, a task's subtasks (JQL parent = KEY), in Jira's
+        board order (Rank). The "parent" field covers both since Atlassian replaced "Epic Link"."""
+        key = key.strip().upper()
+        if not _ISSUE_KEY.match(key):
+            return []
+        try:
+            return self._search_all(f'parent = "{key}" ORDER BY rank ASC')
+        except JiraAuthError:
+            raise
+        except RuntimeError:
+            # Some projects have no Rank field: same list ordered by creation.
+            return self._search_all(f'parent = "{key}" ORDER BY created ASC')
+
+    def _search_all(self, jql: str) -> list[dict[str, Any]]:
+        issues, token = self.search(jql, fields=CHILD_FIELDS, max_results=100)
+        while token and len(issues) < MAX_CHILDREN:
+            more, token = self.search(jql, fields=CHILD_FIELDS, max_results=100, next_page_token=token)
+            if not more:
+                break
+            issues += more
+        return issues
 
     def issue(self, key: str) -> dict[str, Any]:
         payload = self._api("GET", f"issue/{parse.quote(key)}", params={"fields": ",".join(DETAIL_FIELDS)}).payload
