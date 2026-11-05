@@ -20,8 +20,9 @@ locally and sync it to Quixant Hub (`https://support.quixant.com`) through its A
 - Debug log of every API call in `logs/api_sync.log` (profile menu → "Apri log API"); API notes in `docs/portal-api.md`
 - **Jira page** (switch "Ore · Hub | Jira" in the top bar, Ctrl+1 / Ctrl+2): my Jira Cloud issues
   (to do, done in the last 30 days, reported by me, watching), issue details with description and
-  comments, log work, add a comment, change status. Uses a personal Atlassian API token, so no
-  Microsoft / Duo login inside the app. Notes in `docs/jira.md`
+  comments, log work, add a comment, change status. Login in the browser with Microsoft + Duo
+  (Atlassian OAuth 2.0, recommended) or a personal Atlassian API token; the app never sees the
+  Microsoft password. Notes in `docs/jira.md`
 
 ## Run
 From the project root:
@@ -44,8 +45,9 @@ or double-click `login_time.bat`.
 - Profile menu → "Dimentica la password su questo PC" deletes the saved copy.
 - `logs/api_sync.log` masks password and token (`***`). Details: `docs/SECURITY.md`.
 - Fallback without Credential Manager: password in `credentials.json` (git-ignored).
-- Jira: the Atlassian API token goes to Credential Manager (entry `login_time/jira:quixantplc.atlassian.net`);
-  `jira_settings.json` (git-ignored) keeps only site and email. On Windows the token is never written
+- Jira: the OAuth secret + refresh token (entry `login_time/jira-oauth:quixantplc.atlassian.net`) or the
+  Atlassian API token (entry `login_time/jira:quixantplc.atlassian.net`) go to Credential Manager;
+  `jira_settings.json` (git-ignored) keeps only site, email and the OAuth Client ID / cloud ID. On Windows the token is never written
   to a file: if Credential Manager refuses it, it is used for the session only.
 
 ## Files
@@ -54,8 +56,8 @@ or double-click `login_time.bat`.
 - `docs/DESIGN_BRIEF.md` – UI brief and rationale of the technical choices
 - `docs/extra-off-api.md` – verified Extra Off API flow
 - `docs/SECURITY.md` – how password and token are handled, comparison with the browser, limits and checks
-- `docs/jira.md` – Jira page: how to create the API token, endpoints used, troubleshooting
-- `jira_settings.json` – Jira site + email (git-ignored, no token inside)
+- `docs/jira.md` – Jira page: Duo login (OAuth) or API token, endpoints used, troubleshooting
+- `jira_settings.json` – Jira site, email, OAuth Client ID (git-ignored, no secret or token inside)
 
 ## Local data
 `worklogs.json`, `ticket_uuid_cache.json` and `credentials.json` are git-ignored:

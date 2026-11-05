@@ -2,25 +2,60 @@
 
 La pagina **Jira** (selettore "Ore · Hub | Jira" in alto, oppure Ctrl+1 / Ctrl+2) mostra le
 issue di Jira Cloud (`https://quixantplc.atlassian.net`) senza aprire il browser.
-Aggiornato al 30/10/2026.
+Aggiornato al 05/11/2026.
 
 ---
 
-## 1. Perché un token e non il login Microsoft + Duo
+## 1. Due modi per collegarsi
 
-Nel browser entri in Jira con il single sign-on aziendale: Microsoft, poi password, poi Duo
-sul cellulare. Quel flusso è pensato per un browser e l'app non lo replica: non legge né
-salva la password Microsoft e non tocca Duo.
+| | Login Atlassian · Duo (consigliato) | API token |
+|---|---|---|
+| Come entri | Nel browser: Microsoft → password → **Duo** → "Accetta" | Crei un token una volta su id.atlassian.com e lo incolli |
+| Duo | Al collegamento, e di nuovo se non usi Jira dall'app per 90 giorni o revochi l'accesso | Solo quando crei il token |
+| Cosa salva l'app | Secret dell'integrazione + token di rinnovo (Gestore credenziali) | Il token (Gestore credenziali) |
+| Revoca | id.atlassian.com → App collegate, oppure menu ⋯ → "Scollega" | Pagina dei token → Revoke |
 
-Atlassian prevede un altro accesso per i programmi: un **API token personale**.
-- Lo crei **una volta** nel browser, dopo il normale login Microsoft + Duo.
-- Ha gli stessi permessi del tuo utente Jira (o meno, se scegli gli scope).
-- Scade (al massimo dopo 365 giorni) e lo puoi revocare quando vuoi.
-- L'app lo salva nel Gestore credenziali di Windows, come la password del portale.
+In nessuno dei due casi l'app vede o salva la password Microsoft: il login aziendale resta nel browser.
 
-## 2. Creare il token (una volta)
+## 2. Login Atlassian con Duo (OAuth 2.0)
 
-1. Nella pagina Jira dell'app premi **"Apri la pagina dei token ↗"**. Si apre
+### 2.1 Una volta sola: l'integrazione nella developer console
+
+1. Apri `https://developer.atlassian.com/console/myapps/` (pulsante **"Apri la developer
+   console ↗"** nella pagina Jira dell'app).
+2. **Create → OAuth 2.0 integration**, nome a piacere (es. `check_ticket`),
+   **Access type: Resource-level**: l'accesso vale solo per il sito scelto al login.
+3. **Permissions → Jira API → Configure**: `read:jira-work`, `write:jira-work`, `read:jira-user`.
+4. **Authorization → OAuth 2.0 (3LO) → Configure**: Callback URL `http://localhost:53682/callback`.
+5. **Settings**: copia **Client ID** e **Secret** e incollali nell'app (non in chat né in email).
+
+L'integrazione resta privata: la usi solo tu.
+
+### 2.2 Il login
+
+1. Pagina Jira → scheda **"Login Atlassian · Duo"** → controlla sito, Client ID e Secret.
+2. **"Accedi con Atlassian ↗"**: si apre il browser.
+3. Login aziendale (Microsoft → password → Duo), poi nella pagina Atlassian scegli
+   `quixantplc.atlassian.net` e premi **"Accetta"**. Atlassian può avvisare che l'app non è
+   verificata: è la tua integrazione.
+4. Il browser mostra "Jira collegato a login_time": chiudi la scheda e torna all'app.
+
+Dopo il primo login il vecchio API token viene tolto da questo PC: revocalo anche dalla
+pagina dei token Atlassian.
+
+Agli avvii successivi l'app usa il token di rinnovo e non chiede niente. Il login con Duo
+torna se:
+- non usi Jira dall'app per **90 giorni**;
+- revochi l'accesso (id.atlassian.com → App collegate) o premi "Scollega";
+- gli admin Atlassian bloccano l'integrazione.
+
+Menu ⋯ della pagina Jira: "Rifai il login (Microsoft + Duo)…", "App collegate al mio
+account Atlassian ↗", "Usa un API token…", "Scollega Jira da questo PC" (Client ID e Secret
+restano: il login successivo è un clic).
+
+## 3. In alternativa: API token
+
+1. Nella pagina Jira scegli la scheda **"API token"** e premi **"Apri la pagina dei token ↗"**. Si apre
    `https://id.atlassian.com/manage-profile/security/api-tokens`: fai il login come sempre
    (Microsoft → password → Duo).
 2. Scegli **"Create API token with scopes"** (consigliato):
@@ -40,7 +75,7 @@ Atlassian prevede un altro accesso per i programmi: un **API token personale**.
 
 L'app verifica il token con `GET /rest/api/3/myself` e solo se funziona lo salva.
 
-## 3. Cosa si può fare
+## 4. Cosa si può fare
 
 | Funzione | Dove | API Jira |
 |----------|------|----------|
@@ -61,14 +96,30 @@ I filtri usano queste JQL:
 Le ore registrate su Jira **non** vengono inviate al portale Quixant Hub: sono due sistemi
 separati. Per il portale si usa la pagina "Ore · Hub".
 
-## 4. Dettagli tecnici
+## 5. Dettagli tecnici
 
 Codice:
 - `src/login_time/jira_client.py`: client REST v3, solo libreria standard Python;
+- `src/login_time/jira_oauth.py`: login OAuth 2.0 (3LO) nel browser, rinnovo del token;
 - `src/login_time/jira_page.py`: pagina e finestra della issue;
-- `src/login_time/config.py`: `load_jira_settings`, `save_jira_settings`, `forget_jira_token`.
+- `src/login_time/config.py`: `load_jira_settings`, `save_jira_settings`, `forget_jira_token`,
+  `load_jira_oauth`, `save_jira_oauth`, `save_jira_oauth_refresh`, `forget_jira_oauth`.
 
-Come si collega:
+Login Atlassian (OAuth 2.0 3LO):
+- l'app apre `https://auth.atlassian.com/authorize` con gli scope sopra più `offline_access`
+  (serve per il token di rinnovo) e un `state` casuale;
+- un piccolo server in ascolto **solo su 127.0.0.1:53682** riceve il ritorno del browser e
+  accetta solo la risposta con lo stesso `state`; si chiude subito dopo (o dopo 5 minuti,
+  o con "Annulla login");
+- il codice viene scambiato su `https://auth.atlassian.com/oauth/token` (serve il Secret:
+  Atlassian non supporta PKCE per queste app);
+- `https://api.atlassian.com/oauth/token/accessible-resources` dà il `cloudId` del sito;
+- le chiamate vanno a `https://api.atlassian.com/ex/jira/<cloudId>/rest/api/3/...` con
+  `Authorization: Bearer <access token>` (dura circa 1 ora, solo in memoria);
+- il token di rinnovo **cambia a ogni uso** (rotazione): l'app salva subito quello nuovo.
+  Pagina e finestre delle issue condividono la stessa sessione, che si rinnova una volta sola.
+
+API token:
 - **Autenticazione**: HTTP Basic con `email:token`, sempre in HTTPS.
 - **Token classico**: chiamate dirette a `https://quixantplc.atlassian.net/rest/api/3/...`.
 - **Token con scope**: Atlassian accetta questi token solo tramite il gateway
@@ -87,14 +138,17 @@ Formati dei dati:
 Esecuzione e log:
 - Tutte le chiamate girano in background: la finestra non si blocca.
 - Il log `logs/api_sync.log` registra le chiamate come `jira /rest/api/3/...`. Non scrive
-  l'header `Authorization`, quindi niente token.
+  l'header `Authorization`, quindi niente token. Per il login OAuth scrive solo l'esito
+  ("scambio del codice riuscito", "rinnovo del token riuscito"): codice, Secret e token mai.
 
-## 5. Dove sono i dati
+## 6. Dove sono i dati
 
 | Cosa | Dove |
 |------|------|
 | API token | Gestore credenziali di Windows, voce `login_time/jira:quixantplc.atlassian.net` |
-| Sito ed email | `jira_settings.json` nella cartella del progetto (escluso da git) |
+| Login Atlassian: Secret + token di rinnovo | Gestore credenziali di Windows, voce `login_time/jira-oauth:quixantplc.atlassian.net` (più `#1`, `#2`… perché il token è lungo) |
+| Login Atlassian: access token | Solo in memoria (circa 1 ora) |
+| Sito, email, Client ID, cloudId, modo di accesso | `jira_settings.json` nella cartella del progetto (escluso da git) |
 | Issue, commenti | Solo in memoria, riletti a ogni apertura |
 
 Su Windows il token non finisce mai in un file. Se il Gestore credenziali rifiuta la
@@ -104,10 +158,15 @@ Per togliere il token da questo PC: menu ⋯ della pagina Jira → **"Dimentica 
 questo PC"**. In alternativa: Pannello di controllo → Gestione credenziali → Credenziali di
 Windows. Per revocarlo del tutto: pagina dei token Atlassian → **Revoke**.
 
-## 6. Problemi frequenti
+## 7. Problemi frequenti
 
 | Messaggio | Causa probabile | Cosa fare |
 |-----------|-----------------|-----------|
+| "Il collegamento con Atlassian è scaduto o è stato revocato" | 90 giorni senza usare Jira dall'app, oppure accesso revocato | "Accedi con Atlassian" e rifai Microsoft + Duo |
+| "La porta 53682 è occupata" | Un altro login è ancora in attesa, o un altro programma usa la porta | Chiudi l'altro login (o aspetta 5 minuti) e riprova |
+| "Atlassian ha rifiutato l'app (invalid_client)" | Client ID o Secret sbagliati | Ricopiali da Settings nella developer console (link "Cambia") |
+| "Accesso non autorizzato" | Hai premuto "Annulla" nella pagina Atlassian, o gli admin non permettono l'integrazione | Riprova; se persiste, chiedi agli admin Atlassian |
+| "L'autorizzazione non comprende quixantplc.atlassian.net" | Al consenso è stato scelto un altro sito | Rifai il login e scegli quixantplc |
 | "Jira ha rifiutato il token (HTTP 401)" | Token scaduto o revocato, oppure email diversa da quella dell'account Atlassian | Crea un nuovo token; controlla l'email (menu ⋯ → "Cambia token…") |
 | "HTTP 403" | Al token manca uno scope, oppure gli admin hanno bloccato gli API token per gli account aziendali | Ricrea il token con i tre scope; se persiste, chiedi agli admin Atlassian |
 | "Issue does not exist…" (404) | La issue non esiste o non hai i permessi | Aprila nel browser per verificare |

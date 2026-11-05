@@ -19,7 +19,7 @@ LOG_FILE = LOG_DIR / "api_sync.log"
 
 _MAX_BODY = 4000
 _MAX_LIST_RESPONSE = 400
-_SECRET_KEYS = {"password", "pwd", "accesstoken", "access_token", "token", "jwt", "bearertoken"}
+_SECRET_KEYS = {"password", "pwd", "accesstoken", "access_token", "token", "jwt", "bearertoken", "refresh_token", "client_secret"}
 
 _logger = logging.getLogger("login_time.api")
 _configured = False

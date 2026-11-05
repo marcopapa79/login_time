@@ -1,7 +1,9 @@
 """Tiny in-process Jira Cloud stand-in for the tests (no network, no real data).
 
 Accepts the "classic" token on the site URLs and the "scoped" token only through the
-gateway path /ex/jira/<cloudId>/..., like Atlassian does.
+gateway path /ex/jira/<cloudId>/..., like Atlassian does. It also plays auth.atlassian.com
+for the OAuth login: /oauth/token (code exchange, rotating refresh tokens) and
+/oauth/token/accessible-resources; OAuth access tokens work on the gateway only.
 """
 
 from __future__ import annotations
@@ -16,6 +18,10 @@ EMAIL = "marco.papa@example.com"
 CLASSIC_TOKEN = "classic-token-123"
 SCOPED_TOKEN = "scoped-token-456"
 CLOUD_ID = "cloud-0001"
+CLIENT_ID = "client-id-abc"
+CLIENT_SECRET = "client-secret-xyz"
+AUTH_CODE = "auth-code-123"
+SITE_URL = "https://quixantplc.atlassian.net"
 
 
 def _adf(text: str) -> dict:
@@ -62,6 +68,14 @@ class FakeJira:
         self.transitions_done: list[tuple[str, str]] = []
         self.requests: list[tuple[str, str, dict | None]] = []
         self.auth_headers: list[str] = []
+        # OAuth
+        self.access_tokens: set[str] = set()
+        self.refresh_tokens: set[str] = set()
+        self.grants: list[str] = []
+        self._counter = 0
+        self._lock = threading.Lock()
+        self.resource_scopes = ["read:jira-work", "write:jira-work", "read:jira-user"]
+        self.resource_url = SITE_URL
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
@@ -76,6 +90,37 @@ class FakeJira:
     def stop(self) -> None:
         self.server.shutdown()
         self.server.server_close()
+
+    def expire_access_tokens(self) -> None:
+        self.access_tokens.clear()
+
+    def _issue_tokens(self) -> dict:
+        with self._lock:
+            self._counter += 1
+            n = self._counter
+        access, refresh = f"at-{n}", f"rt-{n}-" + "r" * 1800  # long, like real JWT refresh tokens
+        self.access_tokens.add(access)
+        self.refresh_tokens.add(refresh)
+        return {"access_token": access, "expires_in": 3600, "refresh_token": refresh, "token_type": "Bearer",
+                "scope": "read:jira-work write:jira-work read:jira-user offline_access"}
+
+    def _token_endpoint(self, body: dict) -> tuple[int, dict]:
+        grant = str(body.get("grant_type", ""))
+        self.grants.append(grant)
+        if body.get("client_id") != CLIENT_ID or body.get("client_secret") != CLIENT_SECRET:
+            return 401, {"error": "invalid_client", "error_description": "Unauthorized"}
+        if grant == "authorization_code":
+            if body.get("code") != AUTH_CODE or body.get("redirect_uri") != "http://localhost:53682/callback":
+                return 403, {"error": "invalid_grant", "error_description": "Invalid authorization code"}
+            return 200, self._issue_tokens()
+        if grant == "refresh_token":
+            with self._lock:
+                token = str(body.get("refresh_token", ""))
+                if token not in self.refresh_tokens:
+                    return 403, {"error": "invalid_grant", "error_description": "Unknown or invalid refresh token."}
+                self.refresh_tokens.discard(token)  # rotation: the used one stops working
+            return 200, self._issue_tokens()
+        return 400, {"error": "unsupported_grant_type"}
 
     # ------------------------------------------------------------------ handler
     def _handler(self):
@@ -98,6 +143,8 @@ class FakeJira:
                 header = self.headers.get("Authorization", "")
                 if header:
                     fake.auth_headers.append(header)
+                if header.startswith("Bearer "):
+                    return "bearer:" + header[7:]
                 if not header.startswith("Basic "):
                     return ""
                 email, _, token = base64.b64decode(header[6:]).decode("utf-8").partition(":")
@@ -113,11 +160,20 @@ class FakeJira:
 
                 if path == "/_edge/tenant_info":
                     return self._reply(200, {"cloudId": CLOUD_ID})
+                if path == "/oauth/token" and method == "POST":
+                    status, payload = fake._token_endpoint(body or {})
+                    return self._reply(status, payload)
                 token = self._token()
+                bearer_ok = token.startswith("bearer:") and token[7:] in fake.access_tokens
+                if path == "/oauth/token/accessible-resources":
+                    if not bearer_ok:
+                        return self._reply(401, {"code": 401, "message": "Unauthorized"})
+                    return self._reply(200, [{"id": CLOUD_ID, "url": fake.resource_url, "name": "quixantplc",
+                                              "scopes": fake.resource_scopes, "avatarUrl": ""}])
                 gateway_prefix = f"/ex/jira/{CLOUD_ID}"
                 if path.startswith(gateway_prefix):
                     path = path[len(gateway_prefix):]
-                    allowed = token == SCOPED_TOKEN
+                    allowed = token == SCOPED_TOKEN or bearer_ok
                 else:
                     allowed = token == CLASSIC_TOKEN
                 if not allowed:

@@ -1,9 +1,10 @@
 """Jira Cloud client for login_time (no Tk code here).
 
-Authentication: Atlassian API token + account email (HTTP Basic), the method Atlassian
-documents for scripts on accounts that sign in with SSO / two-step verification.
-The token is created once by the user on id.atlassian.com after the normal
-Microsoft + Duo login, and stored in Windows Credential Manager (see jira_settings).
+Two ways to authenticate:
+- OAuth 2.0 (3LO), recommended: browser login with Microsoft + Duo (see jira_oauth.py);
+  calls go through https://api.atlassian.com/ex/jira/<cloudId>/rest/api/3/... with a Bearer token.
+- Atlassian API token + account email (HTTP Basic). The token is created once by the user
+  on id.atlassian.com and stored in Windows Credential Manager (see jira_settings).
 
 - Classic tokens call the site directly:      https://<site>.atlassian.net/rest/api/3/...
 - Tokens with scopes go through the gateway:  https://api.atlassian.com/ex/jira/<cloudId>/rest/api/3/...
@@ -23,6 +24,7 @@ from typing import Any
 from urllib import error, parse, request
 
 from . import api_log
+from .jira_oauth import OAuthError, OAuthLoginRequired, OAuthSession
 
 GATEWAY = "https://api.atlassian.com/ex/jira"
 LIST_FIELDS = ["summary", "status", "priority", "issuetype", "project", "duedate", "updated", "assignee"]
@@ -99,7 +101,7 @@ def clean_text(text: str) -> str:
 # ---------------------------------------------------------------- client
 
 class JiraClient:
-    def __init__(self, site: str, email: str, token: str, timeout: int = 30) -> None:
+    def __init__(self, site: str, email: str, token: str = "", timeout: int = 30, *, oauth: OAuthSession | None = None) -> None:
         site = site.strip().rstrip("/")
         if not site.startswith("http"):
             site = "https://" + site
@@ -107,14 +109,27 @@ class JiraClient:
         self.email = email.strip()
         self._token = token.strip()
         self.timeout = timeout
-        self._base: str | None = None  # site or gateway, decided by connect()
+        self.oauth = oauth
+        # site or gateway, decided by connect(); with OAuth always the gateway.
+        self._base: str | None = f"{GATEWAY}/{oauth.cloud_id}" if oauth else None
+
+    @property
+    def uses_oauth(self) -> bool:
+        return self.oauth is not None
 
     # ---- low level
     def _auth_header(self) -> str:
+        if self.oauth is not None:
+            try:
+                return "Bearer " + self.oauth.access_token()
+            except OAuthLoginRequired as exc:
+                raise JiraAuthError(str(exc)) from exc
+            except OAuthError as exc:
+                raise RuntimeError(str(exc)) from exc
         raw = f"{self.email}:{self._token}".encode("utf-8")
         return "Basic " + base64.b64encode(raw).decode("ascii")
 
-    def _send(self, method: str, url: str, payload: Any = None, *, auth: bool = True) -> JiraResponse:
+    def _send(self, method: str, url: str, payload: Any = None, *, auth: bool = True, retried: bool = False) -> JiraResponse:
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
         headers = {"Accept": "application/json", "User-Agent": "login_time/1.0"}
         if body is not None:
@@ -132,6 +147,10 @@ class JiraClient:
         except error.HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
             api_log.response(log_path, exc.code, "", error=f"HTTP {exc.code}: {raw}")
+            if exc.code == 401 and self.oauth is not None and auth and not retried:
+                # Access token refused before its expiry: get a new one and try once more.
+                self.oauth.invalidate(headers["Authorization"].removeprefix("Bearer "))
+                return self._send(method, url, payload, auth=auth, retried=True)
             if exc.code in (401, 403):
                 raise JiraAuthError(self._auth_message(exc.code, raw)) from exc
             raise RuntimeError(f"Jira HTTP {exc.code}: {self._error_text(raw)}") from exc
@@ -151,6 +170,10 @@ class JiraClient:
 
     def _auth_message(self, code: int, raw: str) -> str:
         detail = self._error_text(raw)
+        if self.oauth is not None:
+            if code == 403:
+                return f"Jira ha negato l'operazione (HTTP 403): permessi o scope dell'app insufficienti. {detail}".strip()
+            return f"Jira ha rifiutato l'accesso (HTTP {code}): rifai il login con Atlassian (Microsoft + Duo). {detail}".strip()
         return (
             f"Jira ha rifiutato il token (HTTP {code}). Controlla email e token: potrebbe essere scaduto, "
             f"revocato o mancare uno scope. {detail}".strip()
@@ -166,6 +189,9 @@ class JiraClient:
     # ---- connection
     def connect(self) -> str:
         """Find which base URL accepts the token (classic → site, scoped → gateway)."""
+        if self.oauth is not None:
+            self._base = f"{GATEWAY}/{self.oauth.cloud_id}"
+            return self._base
         try:
             self._send("GET", f"{self.site}/rest/api/3/myself")
             self._base = self.site

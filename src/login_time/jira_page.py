@@ -1,5 +1,6 @@
-"""Jira page of login_time: connect with an API token, list my issues, open one to read it,
-comment, change status and log work. All network calls run in background jobs."""
+"""Jira page of login_time: connect (browser login with Microsoft + Duo, or an API token),
+list my issues, open one to read it, comment, change status and log work.
+All network calls run in background jobs."""
 
 from __future__ import annotations
 
@@ -9,8 +10,19 @@ from datetime import date, datetime
 from tkinter import ttk
 from typing import TYPE_CHECKING, Any, Callable
 
-from . import api_log
-from .config import forget_jira_token, load_jira_settings, load_jira_token, save_jira_settings
+from . import api_log, jira_oauth
+from .config import (
+    JiraOAuthSettings,
+    forget_jira_oauth,
+    forget_jira_token,
+    load_jira_oauth,
+    load_jira_settings,
+    load_jira_token,
+    save_jira_oauth,
+    save_jira_oauth_app,
+    save_jira_oauth_refresh,
+    save_jira_settings,
+)
 from .jira_client import JiraAuthError, JiraClient, adf_to_text, clean_text
 from .jobs import JobRunner
 from .theme import C, F, Tooltip, button, divider, entry, icon_button, label, pill, text_area
@@ -74,12 +86,35 @@ class JiraPage(tk.Frame):
         self.site, self.email, has_token = load_jira_settings()
         if not self.email:
             self.email = str(app.credentials.get("username", ""))
-        if has_token:
+        oauth = load_jira_oauth()
+        if oauth is not None and oauth.refresh_token and oauth.client_secret and oauth.cloud_id:
+            self.client = self.oauth_client(oauth)
+            self.build_main()
+            self.reload()
+        elif has_token:
             self.client = JiraClient(self.site, self.email, load_jira_token(self.site))
             self.build_main()
             self.reload()
         else:
             self.build_setup()
+
+    def destroy(self) -> None:
+        self.runner.cancel()  # a browser login still waiting releases its port
+        super().destroy()
+
+    # ------------------------------------------------------------------ OAuth helpers
+    def oauth_client(self, oauth: JiraOAuthSettings) -> JiraClient:
+        session = jira_oauth.OAuthSession(
+            oauth.client_id, oauth.client_secret, oauth.refresh_token, oauth.cloud_id, on_rotate=self.persist_refresh
+        )
+        return JiraClient(oauth.site, oauth.email or self.email, oauth=session)
+
+    def persist_refresh(self, refresh_token: str) -> None:
+        """Atlassian rotated the refresh token (worker thread): save the new one right away."""
+        try:
+            save_jira_oauth_refresh(self.site, refresh_token)
+        except (OSError, RuntimeError) as exc:
+            api_log.event(f"    ✗ jira: nuovo token di rinnovo non salvato ({exc}): al prossimo avvio servirà il login")
 
     # ------------------------------------------------------------------ helpers
     def clear(self) -> None:
@@ -103,21 +138,180 @@ class JiraPage(tk.Frame):
 
         return self.runner.start(label_text, lambda _emit, _cancel: worker(), on_event=lambda *_: None, on_finish=finish)
 
-    # ------------------------------------------------------------------ setup (token)
-    def build_setup(self, error_text: str = "") -> None:
+    # ------------------------------------------------------------------ setup (browser login or token)
+    def build_setup(self, error_text: str = "", mode: str | None = None) -> None:
+        """Connection card. mode "oauth" = login Atlassian with Microsoft + Duo (default), "token" = API token."""
         self.clear()
         self.rows = None
         self.scroll_canvas = None
+        if mode is None:
+            mode = "token" if (self.client is not None and not self.client.uses_oauth) else "oauth"
         surface = C["surface"]
         card = tk.Frame(self, bg=surface, highlightthickness=1, highlightbackground=C["border"], padx=28, pady=24)
         card.pack(anchor="n", pady=(20, 0))
         tk.Label(card, text="Collega Jira", font=F["title"], bg=surface, fg=C["text"]).pack(anchor="w")
+        mode_var = tk.StringVar(value=mode)
+        switch = Segmented(card, mode_var, [("oauth", "Login Atlassian · Duo"), ("token", "API token")], bg=surface)
+        for btn in switch.buttons.values():
+            btn.configure(padx=14, pady=4)
+        switch.pack(anchor="w", pady=(12, 14))
+
+        def switch_mode(*_: object) -> None:
+            self.runner.cancel()  # leaving the page stops a browser login still waiting
+            self.after_idle(lambda: self.build_setup(mode=mode_var.get()))  # after the Segmented redraws itself
+
+        mode_var.trace_add("write", switch_mode)
+        body = tk.Frame(card, bg=surface)
+        body.pack(fill="x")
+        if mode == "oauth":
+            self.build_oauth_setup(body, error_text)
+        else:
+            self.build_token_setup(body, error_text)
+
+    def setup_actions(self, parent: tk.Misc) -> tk.Frame:
+        actions = tk.Frame(parent, bg=C["surface"])
+        actions.pack(fill="x", pady=(12, 0))
+        if self.client is not None:
+            button(actions, "Annulla", lambda: (self.build_main(), self.reload()), variant="ghost", parent_bg=C["surface"]).pack(side="right", padx=(8, 0))
+        return actions
+
+    def build_oauth_setup(self, card: tk.Frame, error_text: str, *, edit_app: bool = False) -> None:
+        surface = C["surface"]
+        for child in card.winfo_children():
+            child.destroy()
+        saved = load_jira_oauth()
+        has_app = bool(saved and saved.client_id and saved.client_secret)
         label(
             card,
-            "login_time non usa il login Microsoft + Duo: lo fai una volta nel browser per creare un token "
-            "personale, che l'app salva nel Gestore credenziali di Windows.",
+            "Login nel browser come per Jira web: Microsoft → password → Duo → “Accetta”. L'accesso si rinnova da solo "
+            "(Gestore credenziali di Windows); Duo torna se non usi Jira dall'app per 90 giorni o se revochi l'accesso.",
             kind="muted", bg=surface, wraplength=660,
-        ).pack(anchor="w", pady=(6, 14))
+        ).pack(anchor="w", pady=(0, 12))
+
+        site_var = tk.StringVar(value=(saved.site if saved else "") or self.site)
+        client_id_var = tk.StringVar(value=saved.client_id if saved else "")
+        secret_var = tk.StringVar(value="")
+        fields: list[tk.Entry] = []
+        if has_app and not edit_app:
+            assert saved is not None
+            row = tk.Frame(card, bg=surface)
+            row.pack(fill="x", pady=(0, 4))
+            short_id = saved.client_id if len(saved.client_id) <= 12 else f"{saved.client_id[:4]}…{saved.client_id[-4:]}"
+            label(row, f"Sito {jira_oauth.host_of(saved.site)} · app OAuth {short_id} · Secret salvato nel Gestore credenziali",
+                  kind="small", bg=surface).pack(side="left")
+            button(row, "Cambia", lambda: self.build_oauth_setup(card, "", edit_app=True), variant="link", size="sm", parent_bg=surface).pack(side="left", padx=(8, 0))
+        else:
+            # One-time setup of the "integration" in the Atlassian developer console.
+            tk.Label(
+                card,
+                text="Prima volta: nella developer console crea un'integrazione OAuth 2.0 (3LO) · Resource-level · "
+                f"Jira API: read:jira-work, write:jira-work, read:jira-user · Callback URL {jira_oauth.REDIRECT_URI}",
+                font=F["body"], bg=surface, fg=C["text"], justify="left", anchor="w", wraplength=660,
+            ).pack(anchor="w")
+            button(card, "Apri la developer console ↗", lambda: webbrowser.open(jira_oauth.CONSOLE_URL), variant="link",
+                   size="sm", parent_bg=surface, bold=True).pack(anchor="w", pady=(2, 10))
+            grid = tk.Frame(card, bg=surface)
+            grid.pack(fill="x")
+            grid.columnconfigure(0, weight=1, uniform="oauth")
+            grid.columnconfigure(1, weight=1, uniform="oauth")
+            specs = (("Sito Jira", site_var, False, 0, 0), ("Client ID", client_id_var, False, 0, 1),
+                     ("Secret" + (" (vuoto = tieni quello salvato)" if has_app else ""), secret_var, True, 2, 0))
+            for text, var, secret, row_index, column in specs:
+                field_label(grid, text, bg=surface).grid(row=row_index, column=column, sticky="w", pady=(0, 4), padx=(0 if column == 0 else 12, 0))
+                widget = entry(grid, width=28, textvariable=var, show="•" if secret else "")
+                widget.grid(row=row_index + 1, column=column, sticky="ew", pady=(0, 8), padx=(0 if column == 0 else 12, 0))
+                fields.append(widget)
+            first_empty = next((w for w, v in zip(fields, (site_var, client_id_var, secret_var)) if not v.get()), fields[-1])
+            self.after(30, lambda: first_empty.focus_set() if first_empty.winfo_exists() else None)
+
+        error_label = tk.Label(card, text=error_text, font=F["body"], bg=surface, fg=C["danger"], wraplength=660, justify="left", anchor="w")
+        error_label.pack(fill="x", pady=(4, 0))
+        status_label = label(card, "", kind="muted", bg=surface, wraplength=660)
+        status_label.pack(anchor="w")
+        label(
+            card,
+            f"Nella pagina Atlassian scegli il sito {jira_oauth.host_of(site_var.get()) or 'Jira'} e premi “Accetta”. "
+            "Se avvisa che l'app non è verificata: è la tua integrazione personale.",
+            kind="subtle", bg=surface, wraplength=660,
+        ).pack(anchor="w", pady=(4, 0))
+        actions = self.setup_actions(card)
+        login_btn = button(actions, "Accedi con Atlassian ↗", None, variant="primary")
+        login_btn.pack(side="right")
+        cancel_btn = button(actions, "Annulla login", self.runner.cancel, variant="ghost", parent_bg=surface)
+
+        def start_login() -> None:
+            if self.runner.running:
+                return
+            site = site_var.get().strip().rstrip("/")
+            if site and not site.startswith("http"):
+                site = "https://" + site
+            client_id = client_id_var.get().strip()
+            secret = secret_var.get().strip() or (saved.client_secret if saved else "")
+            if not site or not client_id or not secret:
+                error_label.configure(text="Compila sito, Client ID e Secret.")
+                return
+            email = (saved.email if saved else "") or self.email
+            try:
+                save_jira_oauth_app(site, email, client_id, secret)  # a retry will not ask for them again
+            except (OSError, RuntimeError) as exc:
+                error_label.configure(text=f"Impossibile salvare il Secret: {exc}")
+                return
+            secret_var.set("")
+            error_label.configure(text="")
+            status_label.configure(text="Si è aperto il browser: completa il login (Microsoft → password → Duo) e premi “Accetta”. Attendo…")
+            login_btn.configure(state="disabled", text="In attesa del browser…")
+            cancel_btn.pack(side="right", padx=(0, 8))
+
+            def worker(_emit: object, cancel: object) -> tuple[jira_oauth.LoginResult, JiraClient, dict[str, Any]]:
+                api_log.event(f"=== Jira: login Atlassian (OAuth) su {site} ===")
+                result = jira_oauth.login(site, client_id, secret, cancel=cancel)  # type: ignore[arg-type]
+                client = JiraClient(result.site_url or site, email, oauth=result.session)
+                return result, client, client.myself()
+
+            def finish(outcome: Any, error: BaseException | None) -> None:
+                try:
+                    if not self.winfo_exists():
+                        return
+                except tk.TclError:
+                    return
+                if error is not None:
+                    if login_btn.winfo_exists():
+                        login_btn.configure(state="normal", text="Accedi con Atlassian ↗")
+                        cancel_btn.pack_forget()
+                        status_label.configure(text="")
+                        error_label.configure(text=str(error))
+                    return
+                result, client, me = outcome
+                session = result.session
+                account_email = str(me.get("emailAddress") or email)
+                try:
+                    save_jira_oauth(client.site, account_email, client_id, session.cloud_id, secret, session.refresh_token)
+                    saved_note = "Il vecchio API token è stato tolto da questo PC: revocalo anche su Atlassian."
+                except (OSError, RuntimeError) as exc:
+                    saved_note = f"Accesso non salvato ({exc}): vale solo per questa sessione."
+                session.on_rotate = self.persist_refresh
+                self.site, self.email, self.client, self.me = client.site, account_email, client, me
+                self.app._toast(
+                    f"Jira collegato con login Atlassian (Duo) come {me.get('displayName', account_email)}. {saved_note}",
+                    "success", action_text="Pagina token ↗", action=lambda: webbrowser.open(TOKEN_PAGE), duration_ms=10000,
+                )
+                self.build_main()
+                self.reload()
+
+            self.runner.start("login Jira", worker, on_event=lambda *_: None, on_finish=finish)
+
+        login_btn.configure(command=start_login)
+        for widget in fields:
+            widget.bind("<Return>", lambda _e: start_login())
+
+    def build_token_setup(self, card: tk.Frame, error_text: str) -> None:
+        surface = C["surface"]
+        label(
+            card,
+            "Con il token l'app non passa da Microsoft + Duo: il login lo fai una volta nel browser per creare un token "
+            "personale, che l'app salva nel Gestore credenziali di Windows. Con “Login Atlassian · Duo” invece Duo resta nel giro.",
+            kind="muted", bg=surface, wraplength=660,
+        ).pack(anchor="w", pady=(0, 14))
 
         steps = [
             "1.  Apri la pagina dei token (fai il login normale: Microsoft → password → Duo).",
@@ -144,13 +338,9 @@ class JiraPage(tk.Frame):
         error_label.pack(fill="x")
         label(card, "Il token non viene mai mostrato né scritto nei log. Il login Microsoft/Duo resta solo nel browser.",
               kind="subtle", bg=surface, wraplength=660).pack(anchor="w", pady=(4, 0))
-        actions = tk.Frame(card, bg=surface)
-        actions.pack(fill="x", pady=(12, 0))
+        actions = self.setup_actions(card)
         connect_btn = button(actions, "Collega", None, variant="primary")
         connect_btn.pack(side="right")
-        previous = self.client
-        if previous is not None:
-            button(actions, "Annulla", lambda: (self.build_main(), self.reload()), variant="ghost", parent_bg=surface).pack(side="right", padx=(0, 8))
 
         def connect() -> None:
             if self.runner.running:
@@ -249,15 +439,30 @@ class JiraPage(tk.Frame):
     def settings_menu(self, anchor: tk.Widget) -> None:
         menu = DarkMenu(self.app)
         menu.add_header(self.me.get("displayName") or self.email)
-        menu.add_header(self.site.replace("https://", "") + (" · gateway (token con scope)" if self.client and self.client.uses_gateway else ""), muted=True)
+        oauth = bool(self.client and self.client.uses_oauth)
+        if oauth:
+            access = " · login Atlassian (Microsoft + Duo)"
+        else:
+            access = " · API token" + (" con scope" if self.client and self.client.uses_gateway else "")
+        menu.add_header(self.site.replace("https://", "") + access, muted=True)
         menu.add_separator()
-        menu.add_command("Crea / rinnova token ↗", lambda: webbrowser.open(TOKEN_PAGE))
-        menu.add_command("Cambia token…", self.build_setup)
-        menu.add_command("Dimentica il token Jira su questo PC", self.forget_token, danger=True)
+        if oauth:
+            menu.add_command("Rifai il login (Microsoft + Duo)…", lambda: self.build_setup(mode="oauth"))
+            menu.add_command("App collegate al mio account Atlassian ↗", lambda: webbrowser.open(jira_oauth.CONNECTED_APPS_URL))
+            menu.add_command("Usa un API token…", lambda: self.build_setup(mode="token"))
+            menu.add_separator()
+            menu.add_command("Scollega Jira da questo PC", self.forget_oauth, danger=True)
+        else:
+            menu.add_command("Passa al login con Duo…", lambda: self.build_setup(mode="oauth"))
+            menu.add_command("Crea / rinnova token ↗", lambda: webbrowser.open(TOKEN_PAGE))
+            menu.add_command("Cambia token…", lambda: self.build_setup(mode="token"))
+            menu.add_command("Dimentica il token Jira su questo PC", self.forget_token, danger=True)
         menu.popup_below(anchor, align_right=True)
 
     def forget_session(self) -> None:
         """Logout: drop the client (and the token it holds) from memory."""
+        if self.client is not None and self.client.oauth is not None:
+            self.client.oauth.forget()
         self.client = None
         for window in list(self.issue_windows.values()):
             try:
@@ -273,6 +478,24 @@ class JiraPage(tk.Frame):
         self.me = {}
         self.app._toast("Token Jira cancellato da questo PC", "info")
         self.build_setup()
+
+    def forget_oauth(self) -> None:
+        """Remove the stored login (refresh token). Client ID / Secret stay, so the next login is one click."""
+        if self.runner.running:
+            self.app._toast("Attendi la fine dell'operazione Jira in corso", "info")
+            return
+        try:
+            forget_jira_oauth(self.site, keep_app=True)
+        except (OSError, RuntimeError) as exc:
+            self.app._notify_error("Impossibile scollegare Jira", exc)
+            return
+        self.forget_session()
+        self.me = {}
+        self.app._toast(
+            "Jira scollegato da questo PC. Per revocare l'accesso anche lato Atlassian usa “App collegate”.",
+            "info", action_text="App collegate ↗", action=lambda: webbrowser.open(jira_oauth.CONNECTED_APPS_URL),
+        )
+        self.build_setup(mode="oauth")
 
     # ------------------------------------------------------------------ data
     def jql(self) -> str:
@@ -301,15 +524,17 @@ class JiraPage(tk.Frame):
             me, issues, next_token = result
             self.me = me
             if hasattr(self, "me_label") and self.me_label.winfo_exists():
-                self.me_label.configure(text=f"{me.get('displayName', self.email)} · {self.site.replace('https://', '')}")
+                access = " · login Duo" if client.uses_oauth else ""
+                self.me_label.configure(text=f"{me.get('displayName', self.email)} · {self.site.replace('https://', '')}{access}")
             self.issues = self.issues + issues if more else issues
             self.next_token = next_token
             self.render_list()
 
         def failed(exc: BaseException) -> None:
             if isinstance(exc, JiraAuthError):
+                mode = "oauth" if client.uses_oauth else "token"
                 self.client = None
-                self.build_setup(str(exc))
+                self.build_setup(str(exc), mode=mode)
             else:
                 self.show_message(f"Errore Jira: {exc}", error=True)
 

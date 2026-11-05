@@ -3,7 +3,7 @@
 Documento di riferimento su come l'app gestisce la password e il token di accesso a
 Quixant Hub (`https://support.quixant.com`) e il token di Jira Cloud
 (`https://quixantplc.atlassian.net`, sezione 7). Contiene anche il confronto con l'uso dal
-browser. Aggiornato al 30/10/2026.
+browser. Aggiornato al 05/11/2026.
 
 ---
 
@@ -19,8 +19,9 @@ browser. Aggiornato al 30/10/2026.
   Tutte le altre chiamate usano un **token** che vive solo in memoria e non viene mai
   scritto su disco.
 - **I log mascherano** password e token (`***`).
-- **Jira:** l'app non usa né salva le credenziali Microsoft e non tocca Duo. Usa un API token
-  Atlassian personale, revocabile, che sta solo nel Gestore credenziali di Windows (sezione 7).
+- **Jira:** l'app non usa né salva le credenziali Microsoft. Il modo consigliato è il **login
+  Atlassian nel browser con Duo** (OAuth 2.0); in alternativa un API token personale. In
+  entrambi i casi i segreti stanno solo nel Gestore credenziali di Windows (sezione 7).
 
 ---
 
@@ -47,7 +48,9 @@ Login ──► Gestore credenziali di Windows ──► memoria (solo durante l
 | Token del portale | Solo in memoria | Mai su disco; cancellato con "Esci" o alla chiusura |
 | Ore e work log | `worklogs.json` (cartella dati, es. OneDrive) | Nessun dato di accesso al suo interno |
 | Token Jira (API token Atlassian) | Gestore credenziali di Windows, voce `login_time/jira:quixantplc.atlassian.net` | Come la password; mai in un file su Windows |
-| Sito ed email Jira | `jira_settings.json` nella cartella del progetto | Non sono segreti; file escluso da git |
+| Jira, login Atlassian: Secret dell'integrazione + token di rinnovo | Gestore credenziali di Windows, voce `login_time/jira-oauth:quixantplc.atlassian.net` (+ `#1`, `#2`…) | Come la password; mai in un file su Windows |
+| Jira, login Atlassian: access token | Solo in memoria (circa 1 ora) | Mai su disco |
+| Sito, email, Client ID, cloudId Jira | `jira_settings.json` nella cartella del progetto | Non sono segreti; file escluso da git |
 
 La voce è visibile ed eliminabile da **Pannello di controllo → Gestione credenziali →
 Credenziali di Windows**.
@@ -174,15 +177,38 @@ nessuna estensione di terze parti).
 
 ## 7. Jira Cloud
 
-### 7.1 Perché un API token e non il login Microsoft + Duo
+### 7.1 Due modi di accesso
 
 Nel browser l'accesso a Jira passa dal single sign-on aziendale: Microsoft → password → Duo.
-L'app **non** lo replica:
-- non chiede né salva la password Microsoft;
-- non intercetta i codici o le notifiche Duo;
-- non usa i cookie del browser.
+L'app in nessun caso:
+- chiede o salva la password Microsoft;
+- intercetta i codici o le notifiche Duo;
+- usa i cookie del browser.
 
-Usa il metodo che Atlassian documenta per i programmi: un **API token personale**.
+**Login Atlassian con Duo (OAuth 2.0 3LO, consigliato).** Il login avviene nel browser,
+con Microsoft + Duo, come per Jira web. Atlassian consegna all'app un access token (circa
+1 ora, solo in memoria) e un token di rinnovo. Rispetto all'API token:
+- **Duo resta nel giro:** senza login + Duo nessuno può creare un nuovo accesso; il token di
+  rinnovo scade dopo **90 giorni senza uso** e cambia a ogni utilizzo (rotazione: un token
+  rubato e già usato dall'app non vale più).
+- **Portata minima:** integrazione *Resource-level* (solo `quixantplc.atlassian.net`) e solo
+  gli scope `read:jira-work`, `write:jira-work`, `read:jira-user`.
+- **Revoca** da id.atlassian.com → App collegate, senza toccare la password aziendale.
+- Serve il **Secret** dell'integrazione (Atlassian non supporta PKCE per queste app). Il Secret
+  identifica l'integrazione, non te: da solo non dà accesso a Jira senza il tuo login + Duo.
+  Sta nel Gestore credenziali; se pensi che sia esposto, rigeneralo nella developer console.
+
+Codice del login: `src/login_time/jira_oauth.py`
+- `wait_for_code()`: server di ritorno **solo su 127.0.0.1:53682** (su Windows con
+  `SO_EXCLUSIVEADDRUSE`, così nessun altro programma può mettersi sulla stessa porta); accetta solo
+  la risposta con lo `state` casuale generato per quel login; si chiude subito dopo.
+- `exchange_code()` / `refresh_tokens()`: chiamate HTTPS a `auth.atlassian.com`; il log registra
+  solo l'esito, mai codice, Secret o token.
+- `OAuthSession`: un solo rinnovo alla volta (lock) anche con più finestre aperte; salva subito
+  il nuovo token di rinnovo (`config.save_jira_oauth_refresh`).
+- `config.save_jira_oauth()`: al primo login riuscito toglie dal PC il vecchio API token.
+
+**API token (alternativa).** Il metodo che Atlassian documenta per gli script:
 - Si crea una sola volta su `id.atlassian.com`, dopo il normale login con Microsoft + Duo:
   la MFA protegge anche la creazione del token.
 - Può essere limitato con gli **scope** (`read:jira-work`, `write:jira-work`, `read:jira-user`):
@@ -190,7 +216,7 @@ Usa il metodo che Atlassian documenta per i programmi: un **API token personale*
 - **Scade** (al massimo dopo 365 giorni) e si **revoca** in un clic dalla pagina dei token,
   senza cambiare la password aziendale.
 
-### 7.2 Il percorso del token
+### 7.2 Il percorso dell'API token
 
 ```
 id.atlassian.com (browser, Microsoft + Duo) ──► token copiato una volta nell'app
@@ -224,20 +250,24 @@ Codice:
 
 ### 7.3 Confronto con Jira nel browser
 
-| Aspetto | Jira nel browser | login_time |
-|---------|------------------|------------|
-| Credenziali aziendali (Microsoft) | Digitate nella pagina Microsoft | **Mai** viste né salvate dall'app |
-| MFA (Duo) | A ogni nuova sessione | Una volta, quando crei il token |
-| Sessione | Cookie sul disco nel profilo del browser | Token nel Gestore credenziali, in memoria solo quando serve |
-| Portata | Tutto ciò che il tuo utente può fare in Atlassian | Con gli scope: solo Jira, solo lettura/scrittura delle issue |
-| Revoca | Logout / cambio password | "Revoke" sul token, senza toccare la password aziendale |
-| Scadenza | Dipende dalla sessione SSO | Fissa, al massimo 365 giorni |
+| Aspetto | Jira nel browser | login_time · login Atlassian (Duo) | login_time · API token |
+|---------|------------------|------------------------------------|------------------------|
+| Credenziali Microsoft | Digitate nella pagina Microsoft | Digitate nella pagina Microsoft, **mai** viste dall'app | **Mai** viste né salvate dall'app |
+| MFA (Duo) | A ogni nuova sessione | Al collegamento e dopo 90 giorni senza uso o revoca | Una volta, quando crei il token |
+| Sessione | Cookie nel profilo del browser | Token di rinnovo (rotante) nel Gestore credenziali, access token in memoria | Token nel Gestore credenziali |
+| Portata | Tutto ciò che il tuo utente può fare | Solo quixantplc, solo i 3 scope Jira | Con gli scope: solo Jira, 3 scope |
+| Revoca | Logout / cambio password | App collegate / "Scollega" | "Revoke" sul token |
+| Scadenza | Dipende dalla sessione SSO | 90 giorni senza uso | Fissa, al massimo 365 giorni |
 
 ### 7.4 Limiti
 
 - Il token dà accesso a Jira con i **tuoi permessi** finché è valido: trattalo come una password.
   Se pensi che sia stato esposto, **revocalo** subito dalla pagina dei token Atlassian.
 - Valgono gli stessi limiti della sezione 4: PC sbloccato, programmi avviati col tuo utente.
-- Gli admin Atlassian possono disattivare gli API token per gli account aziendali. In quel caso
-  la pagina Jira mostra l'errore 401/403 e resta valido solo l'accesso dal browser.
+- Gli admin Atlassian possono disattivare gli API token per gli account aziendali, o bloccare le
+  integrazioni OAuth personali. In quel caso la pagina Jira mostra l'errore e resta l'altro modo
+  (o solo il browser).
+- Login Atlassian: il token di rinnovo vale come una sessione del browser che dura di più (fino a
+  90 giorni senza uso). Chi controlla il tuo account Windows sbloccato può usarlo, come i cookie
+  del browser. "Scollega" lo cancella dal PC; App collegate lo revoca lato Atlassian.
 - Le ore registrate su Jira non vanno al portale Quixant Hub (sono sistemi separati).

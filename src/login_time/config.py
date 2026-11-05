@@ -175,6 +175,8 @@ def load_jira_token(site: str) -> str:
 def save_jira_settings(site: str, email: str, token: str) -> None:
     """site + email in jira_settings.json (git-ignored), token in Windows Credential Manager."""
     payload: Dict[str, str] = {"site": site, "email": email}
+    # Keep the OAuth app id (not secret) so switching back to the browser login is quick.
+    payload.update({k: v for k, v in _read_jira_file().items() if k in ("oauth_client_id", "oauth_cloud_id")})
     if credentials_store.is_supported():
         # Windows: the token goes ONLY to Credential Manager; never fall back to a clear-text file.
         if not credentials_store.write_credential(
@@ -184,6 +186,162 @@ def save_jira_settings(site: str, email: str, token: str) -> None:
     else:
         payload["token"] = token  # only off Windows (development/tests), file is git-ignored
     _atomic_write(_JIRA_SETTINGS_FILE, json.dumps(payload, indent=2))
+
+
+# ---- Jira OAuth (browser login with Microsoft + Duo, see jira_oauth.py)
+# jira_settings.json: "auth": "oauth", "oauth_client_id", "oauth_cloud_id" (not secrets).
+# Credential Manager "login_time/jira-oauth:<host>": {"client_secret", "refresh_token"} as JSON.
+# Atlassian refresh tokens can be longer than one credential entry holds (2560 bytes),
+# so long values are split over "<target>", "<target>#1", "<target>#2", …
+_LONG_SECRET_CHUNK = 1000  # characters (UTF-16 in Credential Manager → 2000 bytes)
+_LONG_SECRET_MARK = "LT1:"
+_JIRA_SECRET_LOCK = threading.Lock()
+
+
+@dataclass
+class JiraOAuthSettings:
+    site: str
+    email: str
+    client_id: str
+    cloud_id: str
+    client_secret: str
+    refresh_token: str
+
+
+def _jira_oauth_target(site: str) -> str:
+    host = site.replace("https://", "").replace("http://", "").strip("/").lower()
+    return credentials_store.JIRA_OAUTH_TARGET_PREFIX + host
+
+
+def _write_long_secret(target: str, username: str, value: str, comment: str) -> bool:
+    chunks = [value[i:i + _LONG_SECRET_CHUNK] for i in range(0, len(value), _LONG_SECRET_CHUNK)] or [""]
+    for index, chunk in enumerate(chunks[1:], start=1):
+        if not credentials_store.write_credential(username, chunk, target=f"{target}#{index}", comment=comment):
+            return False
+    head = f"{_LONG_SECRET_MARK}{len(chunks)}:{chunks[0]}"
+    if not credentials_store.write_credential(username, head, target=target, comment=comment):
+        return False
+    _delete_long_secret_parts(target, start=len(chunks))
+    return True
+
+
+def _read_long_secret(target: str) -> str:
+    stored = credentials_store.read_credential(target)
+    if stored is None:
+        return ""
+    head = stored[1]
+    if not head.startswith(_LONG_SECRET_MARK):
+        return head
+    count_text, _, first = head[len(_LONG_SECRET_MARK):].partition(":")
+    parts = [first]
+    for index in range(1, int(count_text or 1)):
+        part = credentials_store.read_credential(f"{target}#{index}")
+        if part is None:
+            return ""  # incomplete: treat as missing (a new login rewrites it)
+        parts.append(part[1])
+    return "".join(parts)
+
+
+def _delete_long_secret_parts(target: str, start: int = 1) -> None:
+    index = start
+    while credentials_store.read_credential(f"{target}#{index}") is not None:
+        credentials_store.delete_credential(f"{target}#{index}")
+        index += 1
+
+
+def _delete_long_secret(target: str) -> None:
+    credentials_store.delete_credential(target)
+    _delete_long_secret_parts(target)
+
+
+def _read_jira_oauth_secret(site: str) -> Dict[str, str]:
+    if credentials_store.is_supported():
+        raw = _read_long_secret(_jira_oauth_target(site))
+    else:
+        raw = _read_jira_file().get("oauth_secret", "")  # only off Windows (development/tests)
+    try:
+        data = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def _write_jira_oauth_secret(site: str, email: str, secret: Dict[str, str]) -> None:
+    raw = json.dumps(secret)
+    if credentials_store.is_supported():
+        if not _write_long_secret(_jira_oauth_target(site), email, raw, "login_time - Jira OAuth (login Microsoft + Duo)"):
+            raise RuntimeError("Gestore credenziali di Windows non disponibile")
+        return
+    data = _read_jira_file()
+    data["oauth_secret"] = raw
+    _atomic_write(_JIRA_SETTINGS_FILE, json.dumps(data, indent=2))
+
+
+def load_jira_oauth() -> JiraOAuthSettings | None:
+    """OAuth settings when the Jira page is set to the browser login, else None.
+    refresh_token is "" when a new login is needed (expired, revoked or "Scollega")."""
+    data = _read_jira_file()
+    if data.get("auth") != "oauth":
+        return None
+    site = data.get("site") or DEFAULT_JIRA_SITE
+    secret = _read_jira_oauth_secret(site)
+    return JiraOAuthSettings(
+        site=site,
+        email=data.get("email", ""),
+        client_id=data.get("oauth_client_id", ""),
+        cloud_id=data.get("oauth_cloud_id", ""),
+        client_secret=secret.get("client_secret", ""),
+        refresh_token=secret.get("refresh_token", ""),
+    )
+
+
+def save_jira_oauth(site: str, email: str, client_id: str, cloud_id: str, client_secret: str, refresh_token: str) -> None:
+    """Switch the Jira page to the browser login. Secret + refresh token go to Credential Manager;
+    the old API token is removed from this PC (revoke it on id.atlassian.com too)."""
+    with _JIRA_SECRET_LOCK:
+        _write_jira_oauth_secret(site, email, {"client_secret": client_secret, "refresh_token": refresh_token})
+        data = {k: v for k, v in _read_jira_file().items() if k in ("oauth_secret",)}
+        data.update({"site": site, "email": email, "auth": "oauth", "oauth_client_id": client_id, "oauth_cloud_id": cloud_id})
+        _atomic_write(_JIRA_SETTINGS_FILE, json.dumps(data, indent=2))
+    if credentials_store.is_supported():
+        credentials_store.delete_credential(_jira_target(site))
+
+
+def save_jira_oauth_refresh(site: str, refresh_token: str) -> None:
+    """Atlassian rotated the refresh token: store the new one (called from worker threads)."""
+    with _JIRA_SECRET_LOCK:
+        data = _read_jira_file()
+        secret = _read_jira_oauth_secret(site)
+        secret["refresh_token"] = refresh_token
+        _write_jira_oauth_secret(site, data.get("email", ""), secret)
+
+
+def save_jira_oauth_app(site: str, email: str, client_id: str, client_secret: str) -> None:
+    """Remember Client ID / Secret before the first login (the refresh token comes after it)."""
+    with _JIRA_SECRET_LOCK:
+        secret = _read_jira_oauth_secret(site)
+        secret["client_secret"] = client_secret
+        _write_jira_oauth_secret(site, email, secret)
+        data = _read_jira_file()
+        data.update({"site": site, "email": email, "auth": "oauth", "oauth_client_id": client_id})
+        _atomic_write(_JIRA_SETTINGS_FILE, json.dumps(data, indent=2))
+
+
+def forget_jira_oauth(site: str, *, keep_app: bool) -> None:
+    """Remove the refresh token (next time: login + Duo). keep_app=False also removes the
+    Client ID / Secret and goes back to the API-token setup."""
+    with _JIRA_SECRET_LOCK:
+        secret = _read_jira_oauth_secret(site)
+        data = _read_jira_file()
+        if keep_app and secret.get("client_secret"):
+            _write_jira_oauth_secret(site, data.get("email", ""), {"client_secret": secret["client_secret"]})
+            return
+        if credentials_store.is_supported():
+            _delete_long_secret(_jira_oauth_target(site))
+        for key in ("auth", "oauth_client_id", "oauth_cloud_id", "oauth_secret"):
+            data.pop(key, None)
+        if data:
+            _atomic_write(_JIRA_SETTINGS_FILE, json.dumps(data, indent=2))
 
 
 def forget_jira_token(site: str) -> None:

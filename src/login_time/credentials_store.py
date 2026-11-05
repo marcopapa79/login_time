@@ -14,6 +14,8 @@ import sys
 TARGET_NAME = "login_time/support.quixant.com"
 # Jira Cloud API token (see jira_client.py); one entry per site.
 JIRA_TARGET_PREFIX = "login_time/jira:"
+# Jira OAuth login (see jira_oauth.py): app secret + refresh token; one entry per site.
+JIRA_OAUTH_TARGET_PREFIX = "login_time/jira-oauth:"
 
 _CRED_TYPE_GENERIC = 1
 _CRED_PERSIST_LOCAL_MACHINE = 2
